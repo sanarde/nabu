@@ -7,11 +7,13 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/timerfd.h>
+#include <time.h>
 #include <unistd.h>
 
 #define BUS_NAME "org.freedesktop.Notifications"
 #define OBJECT_PATH "/org/freedesktop/Notifications"
 #define INTERFACE "org.freedesktop.Notifications"
+#define HISTORY_LIMIT 200
 
 static const char *const capabilities[] = {"body"};
 
@@ -164,8 +166,14 @@ static void emit_closed(struct nabud_bus *bus, uint32_t id, uint32_t reason)
 
 static bool close_note(struct nabud_bus *bus, uint32_t id, uint32_t reason)
 {
-    if (!nabu_notes_close(&bus->notes, id))
+    const struct nabu_note *note = nabu_notes_find(&bus->notes, id);
+
+    if (!note)
         return false;
+    if (!note->transient &&
+        nabu_history_add(&bus->history, note, (uint8_t)reason, time(NULL)) != 0)
+        fprintf(stderr, "nabud: cannot save history\n");
+    nabu_notes_close(&bus->notes, id);
     emit_closed(bus, id, reason);
     return true;
 }
@@ -365,7 +373,8 @@ static void dispatch_all(struct nabud_bus *bus)
         dbus_connection_dispatch(bus->connection);
 }
 
-int nabud_bus_open(struct nabud_bus *bus, int epfd, int timer_fd)
+int nabud_bus_open(struct nabud_bus *bus, int epfd, int timer_fd,
+                   const char *history_path)
 {
     DBusError error;
 
@@ -373,12 +382,17 @@ int nabud_bus_open(struct nabud_bus *bus, int epfd, int timer_fd)
     bus->epfd = epfd;
     bus->timer_fd = timer_fd;
     nabu_notes_init(&bus->notes);
+    if (nabu_history_open(&bus->history, history_path, HISTORY_LIMIT) != 0) {
+        fprintf(stderr, "nabud: out of memory\n");
+        return -1;
+    }
 
     dbus_error_init(&error);
     bus->connection = dbus_bus_get_private(DBUS_BUS_SESSION, &error);
     if (!bus->connection) {
         fprintf(stderr, "nabud: session bus: %s\n", error.message);
         dbus_error_free(&error);
+        nabud_bus_close(bus);
         return -1;
     }
     dbus_connection_set_exit_on_disconnect(bus->connection, FALSE);
@@ -402,15 +416,14 @@ int nabud_bus_open(struct nabud_bus *bus, int epfd, int timer_fd)
     return 0;
 
 fail:
-    dbus_connection_close(bus->connection);
-    dbus_connection_unref(bus->connection);
-    bus->connection = NULL;
+    nabud_bus_close(bus);
     return -1;
 }
 
 void nabud_bus_close(struct nabud_bus *bus)
 {
     nabu_notes_free(&bus->notes);
+    nabu_history_close(&bus->history);
     if (!bus->connection)
         return;
     dbus_connection_close(bus->connection);

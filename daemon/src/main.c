@@ -1,7 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 #include <errno.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/signalfd.h>
@@ -30,9 +32,25 @@ static int add_epoll_source(int epfd, int fd, struct nabud_source *source)
     return epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
 }
 
+static int history_path(char *buffer, size_t size)
+{
+    const char *state = getenv("XDG_STATE_HOME");
+    const char *home = getenv("HOME");
+    int n;
+
+    if (state && state[0] == '/')
+        n = snprintf(buffer, size, "%s/nabu/history", state);
+    else if (home && home[0] == '/')
+        n = snprintf(buffer, size, "%s/.local/state/nabu/history", home);
+    else
+        return -1;
+    return n < (int)size ? 0 : -1;
+}
+
 int main(void)
 {
     struct nabud_bus bus = {0};
+    char path[PATH_MAX];
     struct nabud_source signal_source = {NABUD_SRC_SIGNAL};
     struct nabud_source timer_source = {NABUD_SRC_TIMER};
     int sig_fd, timer_fd, epfd, rc = 1;
@@ -49,7 +67,8 @@ int main(void)
         fprintf(stderr, "nabud: epoll: %s\n", strerror(errno));
         return 1;
     }
-    if (nabud_bus_open(&bus, epfd, timer_fd) != 0)
+    if (nabud_bus_open(&bus, epfd, timer_fd,
+                       history_path(path, sizeof(path)) == 0 ? path : NULL) != 0)
         return 1;
 
     for (;;) {

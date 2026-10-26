@@ -3,6 +3,7 @@
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -85,6 +86,10 @@ static void check_introspection(DBusConnection *c)
     dbus_message_unref(reply);
 }
 
+static char state_dir[] = "/tmp/nabu-state-XXXXXX";
+static char history_file[160];
+static dbus_bool_t hint_transient = TRUE;
+
 static void append_hint(DBusMessageIter *dict, const char *key, int type,
                         const char *signature, const void *value)
 {
@@ -107,7 +112,7 @@ static uint32_t notify_urgency(DBusConnection *c, uint32_t replaces_id,
     const char *app = "test", *icon = "", *body = "body";
     const char *action_key = "default", *action_label = "Open";
     const char *entry = "org.example.app", *wrong = "not a boolean";
-    dbus_bool_t yes = TRUE;
+    dbus_bool_t yes = hint_transient;
     unsigned char level = (unsigned char)urgency;
     uint32_t id = 0;
 
@@ -198,6 +203,7 @@ static void check_notifications(DBusConnection *c)
 
     close_notification(c, 9999);
 
+    hint_transient = FALSE;
     b = notify(c, 0, "short", 100);
     CHECK(wait_closed(c, b, &reason, 2000));
     CHECK(reason == 1);
@@ -209,9 +215,28 @@ static void check_notifications(DBusConnection *c)
     CHECK(wait_closed(c, b, &reason, 2000));
     CHECK(reason == 3);
 
+    hint_transient = TRUE;
     b = notify_urgency(c, 0, "low", 100, 0);
     CHECK(wait_closed(c, b, &reason, 2000));
     CHECK(reason == 1);
+}
+
+static void check_history(void)
+{
+    char text[4096] = "";
+    FILE *file = fopen(history_file, "r");
+    size_t length;
+
+    CHECK(file != NULL);
+    if (!file)
+        return;
+    length = fread(text, 1, sizeof(text) - 1, file);
+    text[length] = '\0';
+    fclose(file);
+    CHECK(strstr(text, "\tshort\t") != NULL);
+    CHECK(strstr(text, "\tcritical\t") != NULL);
+    CHECK(strstr(text, "first again") == NULL);
+    CHECK(strstr(text, "\tlow\t") == NULL);
 }
 
 static pid_t spawn(const char *path)
@@ -231,8 +256,10 @@ int main(int argc, char **argv)
     pid_t daemon, second;
     int status;
 
-    if (argc != 2)
+    if (argc != 2 || !mkdtemp(state_dir))
         return 1;
+    setenv("XDG_STATE_HOME", state_dir, 1);
+    snprintf(history_file, sizeof(history_file), "%s/nabu/history", state_dir);
     c = dbus_bus_get_private(DBUS_BUS_SESSION, NULL);
     CHECK(c != NULL);
     if (!c)
@@ -246,6 +273,7 @@ int main(int argc, char **argv)
     check_capabilities(c);
     check_introspection(c);
     check_notifications(c);
+    check_history();
 
     second = spawn(argv[1]);
     CHECK(waitpid(second, &status, 0) == second);
@@ -257,5 +285,9 @@ int main(int argc, char **argv)
 
     dbus_connection_close(c);
     dbus_connection_unref(c);
+    unlink(history_file);
+    snprintf(history_file, sizeof(history_file), "%s/nabu", state_dir);
+    rmdir(history_file);
+    rmdir(state_dir);
     return check_failures ? 1 : 0;
 }
