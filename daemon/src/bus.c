@@ -171,10 +171,87 @@ static bool read_basic(DBusMessageIter *iter, int type, void *out)
     return true;
 }
 
-static bool skip_array(DBusMessageIter *iter)
+static bool parse_actions(DBusMessageIter *iter, struct nabu_note_input *input)
 {
-    if (dbus_message_iter_get_arg_type(iter) != DBUS_TYPE_ARRAY)
+    DBusMessageIter array;
+    const char **list = NULL;
+    size_t count = 0, capacity = 0;
+
+    if (dbus_message_iter_get_arg_type(iter) != DBUS_TYPE_ARRAY ||
+        dbus_message_iter_get_element_type(iter) != DBUS_TYPE_STRING)
         return false;
+    dbus_message_iter_recurse(iter, &array);
+    while (dbus_message_iter_get_arg_type(&array) == DBUS_TYPE_STRING) {
+        if (count == capacity) {
+            size_t grown = capacity ? capacity * 2 : 8;
+            const char **resized = realloc(list, grown * sizeof(*list));
+
+            if (!resized) {
+                free(list);
+                return false;
+            }
+            list = resized;
+            capacity = grown;
+        }
+        dbus_message_iter_get_basic(&array, &list[count++]);
+        dbus_message_iter_next(&array);
+    }
+    dbus_message_iter_next(iter);
+    input->actions = list;
+    input->action_count = count;
+    return true;
+}
+
+static void apply_hint(struct nabu_note_input *input, const char *key,
+                       DBusMessageIter *value)
+{
+    int type = dbus_message_iter_get_arg_type(value);
+
+    if (type == DBUS_TYPE_BYTE && strcmp(key, "urgency") == 0) {
+        unsigned char urgency;
+
+        dbus_message_iter_get_basic(value, &urgency);
+        input->urgency = urgency <= NABU_URGENCY_CRITICAL ? urgency : NABU_URGENCY_NORMAL;
+    } else if (type == DBUS_TYPE_BOOLEAN && strcmp(key, "transient") == 0) {
+        dbus_bool_t flag;
+
+        dbus_message_iter_get_basic(value, &flag);
+        input->transient = flag;
+    } else if (type == DBUS_TYPE_BOOLEAN && strcmp(key, "resident") == 0) {
+        dbus_bool_t flag;
+
+        dbus_message_iter_get_basic(value, &flag);
+        input->resident = flag;
+    } else if (type == DBUS_TYPE_STRING && strcmp(key, "desktop-entry") == 0) {
+        dbus_message_iter_get_basic(value, &input->desktop_entry);
+    } else if (type == DBUS_TYPE_STRING && strcmp(key, "image-path") == 0) {
+        dbus_message_iter_get_basic(value, &input->image_path);
+    }
+}
+
+static bool parse_hints(DBusMessageIter *iter, struct nabu_note_input *input)
+{
+    DBusMessageIter dict;
+
+    if (dbus_message_iter_get_arg_type(iter) != DBUS_TYPE_ARRAY ||
+        dbus_message_iter_get_element_type(iter) != DBUS_TYPE_DICT_ENTRY)
+        return false;
+    dbus_message_iter_recurse(iter, &dict);
+    while (dbus_message_iter_get_arg_type(&dict) == DBUS_TYPE_DICT_ENTRY) {
+        DBusMessageIter entry, value;
+        const char *key;
+
+        dbus_message_iter_recurse(&dict, &entry);
+        if (dbus_message_iter_get_arg_type(&entry) == DBUS_TYPE_STRING) {
+            dbus_message_iter_get_basic(&entry, &key);
+            dbus_message_iter_next(&entry);
+            if (dbus_message_iter_get_arg_type(&entry) == DBUS_TYPE_VARIANT) {
+                dbus_message_iter_recurse(&entry, &value);
+                apply_hint(input, key, &value);
+            }
+        }
+        dbus_message_iter_next(&dict);
+    }
     dbus_message_iter_next(iter);
     return true;
 }
@@ -186,12 +263,19 @@ static bool parse_notify(DBusMessage *message, uint32_t *replaces_id,
 
     if (!dbus_message_iter_init(message, &iter))
         return false;
-    return read_basic(&iter, DBUS_TYPE_STRING, &input->app_name) &&
-           read_basic(&iter, DBUS_TYPE_UINT32, replaces_id) &&
-           read_basic(&iter, DBUS_TYPE_STRING, &input->app_icon) &&
-           read_basic(&iter, DBUS_TYPE_STRING, &input->summary) &&
-           read_basic(&iter, DBUS_TYPE_STRING, &input->body) && skip_array(&iter) &&
-           skip_array(&iter) && read_basic(&iter, DBUS_TYPE_INT32, &input->timeout_ms);
+    if (!(read_basic(&iter, DBUS_TYPE_STRING, &input->app_name) &&
+          read_basic(&iter, DBUS_TYPE_UINT32, replaces_id) &&
+          read_basic(&iter, DBUS_TYPE_STRING, &input->app_icon) &&
+          read_basic(&iter, DBUS_TYPE_STRING, &input->summary) &&
+          read_basic(&iter, DBUS_TYPE_STRING, &input->body) &&
+          parse_actions(&iter, input)))
+        return false;
+    if (parse_hints(&iter, input) &&
+        read_basic(&iter, DBUS_TYPE_INT32, &input->timeout_ms))
+        return true;
+    free((void *)input->actions);
+    input->actions = NULL;
+    return false;
 }
 
 static DBusMessage *call_notify(struct nabud_bus *bus, DBusMessage *message)
@@ -204,6 +288,7 @@ static DBusMessage *call_notify(struct nabud_bus *bus, DBusMessage *message)
         return dbus_message_new_error(message, DBUS_ERROR_INVALID_ARGS,
                                       "Expected susssasa{sv}i");
     id = nabu_notes_post(&bus->notes, replaces_id, &input, nabu_now_ms());
+    free((void *)input.actions);
     if (id == 0)
         return dbus_message_new_error(message, DBUS_ERROR_NO_MEMORY, "Out of memory");
     arm_timer(bus);
