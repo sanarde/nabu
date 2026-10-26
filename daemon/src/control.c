@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "bus.h"
+#include "config.h"
 
 #define CONTROL_NAME "org.nuros.sanar.nabu"
 #define CONTROL_PATH "/org/nuros/sanar/nabu"
@@ -219,6 +220,15 @@ static void emit_dnd_changed(struct nabud_bus *bus)
     dbus_message_unref(signal);
 }
 
+bool nabud_control_set_do_not_disturb(struct nabud_bus *bus, bool enabled)
+{
+    if (bus->do_not_disturb == enabled)
+        return false;
+    bus->do_not_disturb = enabled;
+    emit_dnd_changed(bus);
+    return true;
+}
+
 static DBusMessage *call_get_property(struct nabud_bus *bus, DBusMessage *message)
 {
     const char *interface, *name;
@@ -284,10 +294,8 @@ static DBusMessage *call_set_property(struct nabud_bus *bus, DBusMessage *messag
         return dbus_message_new_error(message, DBUS_ERROR_INVALID_ARGS,
                                       "Expected a boolean");
     dbus_message_iter_get_basic(&variant, &value);
-    if ((bool)value != bus->do_not_disturb) {
-        bus->do_not_disturb = value;
-        emit_dnd_changed(bus);
-    }
+    if (nabud_control_set_do_not_disturb(bus, value) && bus->config)
+        nabud_config_set_do_not_disturb(bus->config, value);
     return dbus_message_new_method_return(message);
 }
 

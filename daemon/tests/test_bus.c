@@ -602,6 +602,30 @@ static int wait_history_count(DBusConnection *c, size_t count, int timeout_ms)
     return 0;
 }
 
+static int config_has(const char *line)
+{
+    char path[200], text[1024] = "";
+    FILE *file;
+    size_t length;
+
+    snprintf(path, sizeof(path), "%s/cfgd.conf", config_dir);
+    file = fopen(path, "r");
+    if (!file)
+        return 0;
+    length = fread(text, 1, sizeof(text) - 1, file);
+    text[length] = '\0';
+    fclose(file);
+    return strstr(text, line) != NULL;
+}
+
+static void check_stored_do_not_disturb(DBusConnection *c)
+{
+    CHECK(dnd_get(c));
+    dnd_set(c, 0);
+    CHECK(config_has("do-not-disturb = false"));
+    CHECK(!dnd_get(c));
+}
+
 static void check_config(DBusConnection *c)
 {
     DBusMessage *reply;
@@ -629,6 +653,12 @@ static void check_config(DBusConnection *c)
     reply = ctl_call(c, "GetHistory", 0, 0);
     CHECK(has_summary(reply, 5, "h4"));
     dbus_message_unref(reply);
+
+    cfgd_set(c, "/org/nuros/sanar/nabu/do-not-disturb", "true");
+    for (int i = 0; i < 30 && !dnd_get(c); i++)
+        usleep(100000);
+    CHECK(dnd_get(c));
+    dnd_set(c, 0);
 }
 
 static int remove_entry(const char *path, const struct stat *st, int type, struct FTW *ftw)
@@ -670,7 +700,7 @@ static void write_config(void)
     CHECK(file != NULL);
     if (!file)
         return;
-    fputs("[/org/nuros/sanar/nabu]\ndefault-timeout = 500\nhistory-limit = 3\n", file);
+    fputs("[/org/nuros/sanar/nabu]\ndefault-timeout = 500\nhistory-limit = 3\ndo-not-disturb = true\n", file);
     fclose(file);
 }
 
@@ -717,6 +747,8 @@ int main(int argc, char **argv)
     CHECK(daemon > 0);
     CHECK(wait_for_name(c));
 
+    if (with_cfgd)
+        check_stored_do_not_disturb(c);
     check_server_information(c);
     check_capabilities(c);
     check_introspection(c);

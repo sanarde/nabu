@@ -3,6 +3,7 @@
 #define NABUD_CONFIG_H
 
 #include <cfgd/cfgd.h>
+#include <stdbool.h>
 
 #include "loop.h"
 
@@ -22,5 +23,8 @@ struct nabud_config {
 int nabud_config_open(struct nabud_config *config, struct nabud_bus *bus, int epfd);
 void nabud_config_close(struct nabud_config *config);
 void nabud_config_dispatch(struct nabud_config *config);
+
+/* Stores the mode in cfgd so that it survives a restart. */
+void nabud_config_set_do_not_disturb(struct nabud_config *config, bool enabled);
 
 #endif

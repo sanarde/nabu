@@ -16,12 +16,15 @@ struct nabud_bus_watch {
     int fd;
 };
 
+struct nabud_config;
+
 struct nabud_bus {
     DBusConnection *connection;
     int epfd;
     int timer_fd;
     struct nabu_notes notes;
     struct nabu_history history;
+    struct nabud_config *config;
     bool do_not_disturb;
     uint32_t suppressed_id;
 };

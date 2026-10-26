@@ -15,3 +15,8 @@ default = 200
 min = 0
 max = 10000
 summary = Number of closed notifications kept in the history
+
+[do-not-disturb]
+type = b
+default = false
+summary = Show only critical notifications and put the others in the history
