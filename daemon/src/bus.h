@@ -22,6 +22,8 @@ struct nabud_bus {
     int timer_fd;
     struct nabu_notes notes;
     struct nabu_history history;
+    bool do_not_disturb;
+    uint32_t suppressed_id;
 };
 
 int nabud_bus_open(struct nabud_bus *bus, int epfd, int timer_fd,

@@ -2,6 +2,7 @@
 #include "control.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #include "bus.h"
 
@@ -9,6 +10,8 @@
 #define CONTROL_PATH "/org/nuros/sanar/nabu"
 #define CONTROL_INTERFACE "org.nuros.sanar.Nabu"
 #define ERROR_PREFIX "org.nuros.sanar.Nabu.Error."
+#define PROPERTIES_INTERFACE "org.freedesktop.DBus.Properties"
+#define PROPERTY_DND "DoNotDisturb"
 
 #define NOTE_SIGNATURE "(ussssssasyb)"
 #define ENTRY_SIGNATURE "(xyyssssss)"
@@ -33,12 +36,34 @@ static const char introspection_xml[] =
     "      <arg type=\"u\" name=\"id\" direction=\"in\"/>\n"
     "      <arg type=\"s\" name=\"action_key\" direction=\"in\"/>\n"
     "    </method>\n"
+    "    <property name=\"DoNotDisturb\" type=\"b\" access=\"readwrite\"/>\n"
     "    <signal name=\"Posted\">\n"
     "      <arg type=\"" NOTE_SIGNATURE "\" name=\"notification\"/>\n"
     "    </signal>\n"
     "    <signal name=\"Closed\">\n"
     "      <arg type=\"u\" name=\"id\"/>\n"
     "      <arg type=\"u\" name=\"reason\"/>\n"
+    "    </signal>\n"
+    "  </interface>\n"
+    "  <interface name=\"" PROPERTIES_INTERFACE "\">\n"
+    "    <method name=\"Get\">\n"
+    "      <arg type=\"s\" name=\"interface_name\" direction=\"in\"/>\n"
+    "      <arg type=\"s\" name=\"property_name\" direction=\"in\"/>\n"
+    "      <arg type=\"v\" name=\"value\" direction=\"out\"/>\n"
+    "    </method>\n"
+    "    <method name=\"Set\">\n"
+    "      <arg type=\"s\" name=\"interface_name\" direction=\"in\"/>\n"
+    "      <arg type=\"s\" name=\"property_name\" direction=\"in\"/>\n"
+    "      <arg type=\"v\" name=\"value\" direction=\"in\"/>\n"
+    "    </method>\n"
+    "    <method name=\"GetAll\">\n"
+    "      <arg type=\"s\" name=\"interface_name\" direction=\"in\"/>\n"
+    "      <arg type=\"a{sv}\" name=\"properties\" direction=\"out\"/>\n"
+    "    </method>\n"
+    "    <signal name=\"PropertiesChanged\">\n"
+    "      <arg type=\"s\" name=\"interface_name\"/>\n"
+    "      <arg type=\"a{sv}\" name=\"changed_properties\"/>\n"
+    "      <arg type=\"as\" name=\"invalidated_properties\"/>\n"
     "    </signal>\n"
     "  </interface>\n"
     "  <interface name=\"org.freedesktop.DBus.Introspectable\">\n"
@@ -151,6 +176,121 @@ static DBusMessage *call_invoke(struct nabud_bus *bus, DBusMessage *message)
     return dbus_message_new_method_return(message);
 }
 
+static void append_dnd_variant(DBusMessageIter *iter, bool enabled)
+{
+    DBusMessageIter variant;
+    dbus_bool_t value = enabled;
+
+    dbus_message_iter_open_container(iter, DBUS_TYPE_VARIANT, "b", &variant);
+    dbus_message_iter_append_basic(&variant, DBUS_TYPE_BOOLEAN, &value);
+    dbus_message_iter_close_container(iter, &variant);
+}
+
+static void append_dnd_dict(DBusMessageIter *iter, bool enabled)
+{
+    DBusMessageIter array, entry;
+    const char *name = PROPERTY_DND;
+
+    dbus_message_iter_open_container(iter, DBUS_TYPE_ARRAY, "{sv}", &array);
+    dbus_message_iter_open_container(&array, DBUS_TYPE_DICT_ENTRY, NULL, &entry);
+    dbus_message_iter_append_basic(&entry, DBUS_TYPE_STRING, &name);
+    append_dnd_variant(&entry, enabled);
+    dbus_message_iter_close_container(&array, &entry);
+    dbus_message_iter_close_container(iter, &array);
+}
+
+static void emit_dnd_changed(struct nabud_bus *bus)
+{
+    DBusMessage *signal;
+    DBusMessageIter iter, invalidated;
+    const char *interface = CONTROL_INTERFACE;
+
+    if (!bus->connection)
+        return;
+    signal = dbus_message_new_signal(CONTROL_PATH, PROPERTIES_INTERFACE, "PropertiesChanged");
+    if (!signal)
+        return;
+    dbus_message_iter_init_append(signal, &iter);
+    dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &interface);
+    append_dnd_dict(&iter, bus->do_not_disturb);
+    dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, "s", &invalidated);
+    dbus_message_iter_close_container(&iter, &invalidated);
+    dbus_connection_send(bus->connection, signal, NULL);
+    dbus_message_unref(signal);
+}
+
+static DBusMessage *call_get_property(struct nabud_bus *bus, DBusMessage *message)
+{
+    const char *interface, *name;
+    DBusMessage *reply;
+    DBusMessageIter iter;
+
+    if (!dbus_message_get_args(message, NULL, DBUS_TYPE_STRING, &interface, DBUS_TYPE_STRING,
+                               &name, DBUS_TYPE_INVALID))
+        return dbus_message_new_error(message, DBUS_ERROR_INVALID_ARGS, "Expected two strings");
+    if (strcmp(interface, CONTROL_INTERFACE) != 0 || strcmp(name, PROPERTY_DND) != 0)
+        return dbus_message_new_error(message, DBUS_ERROR_UNKNOWN_PROPERTY,
+                                      "No such property");
+    reply = dbus_message_new_method_return(message);
+    if (reply) {
+        dbus_message_iter_init_append(reply, &iter);
+        append_dnd_variant(&iter, bus->do_not_disturb);
+    }
+    return reply;
+}
+
+static DBusMessage *call_get_all_properties(struct nabud_bus *bus, DBusMessage *message)
+{
+    const char *interface;
+    DBusMessage *reply;
+    DBusMessageIter iter;
+
+    if (!dbus_message_get_args(message, NULL, DBUS_TYPE_STRING, &interface,
+                               DBUS_TYPE_INVALID))
+        return dbus_message_new_error(message, DBUS_ERROR_INVALID_ARGS, "Expected a string");
+    if (strcmp(interface, CONTROL_INTERFACE) != 0)
+        return dbus_message_new_error(message, DBUS_ERROR_UNKNOWN_INTERFACE,
+                                      "No such interface");
+    reply = dbus_message_new_method_return(message);
+    if (reply) {
+        dbus_message_iter_init_append(reply, &iter);
+        append_dnd_dict(&iter, bus->do_not_disturb);
+    }
+    return reply;
+}
+
+static DBusMessage *call_set_property(struct nabud_bus *bus, DBusMessage *message)
+{
+    DBusMessageIter iter, variant;
+    const char *interface, *name;
+    dbus_bool_t value;
+
+    if (!dbus_message_iter_init(message, &iter) ||
+        dbus_message_iter_get_arg_type(&iter) != DBUS_TYPE_STRING)
+        return dbus_message_new_error(message, DBUS_ERROR_INVALID_ARGS, "Expected ssv");
+    dbus_message_iter_get_basic(&iter, &interface);
+    dbus_message_iter_next(&iter);
+    if (dbus_message_iter_get_arg_type(&iter) != DBUS_TYPE_STRING)
+        return dbus_message_new_error(message, DBUS_ERROR_INVALID_ARGS, "Expected ssv");
+    dbus_message_iter_get_basic(&iter, &name);
+    dbus_message_iter_next(&iter);
+    if (strcmp(interface, CONTROL_INTERFACE) != 0 || strcmp(name, PROPERTY_DND) != 0)
+        return dbus_message_new_error(message, DBUS_ERROR_UNKNOWN_PROPERTY,
+                                      "No such property");
+    if (dbus_message_iter_get_arg_type(&iter) != DBUS_TYPE_VARIANT)
+        return dbus_message_new_error(message, DBUS_ERROR_INVALID_ARGS, "Expected ssv");
+    dbus_message_iter_recurse(&iter, &variant);
+    if (dbus_message_iter_get_arg_type(&variant) != DBUS_TYPE_BOOLEAN)
+        return dbus_message_new_error(message, DBUS_ERROR_INVALID_ARGS,
+                                      "Expected a boolean");
+    dbus_message_iter_get_basic(&variant, &value);
+    if ((bool)value != bus->do_not_disturb) {
+        bus->do_not_disturb = value;
+        emit_dnd_changed(bus);
+    }
+    return dbus_message_new_method_return(message);
+}
+
 static DBusMessage *reply_introspect(DBusMessage *message)
 {
     DBusMessage *reply = dbus_message_new_method_return(message);
@@ -177,6 +317,12 @@ static DBusHandlerResult handle_message(DBusConnection *connection,
         reply = call_dismiss(bus, message);
     else if (dbus_message_is_method_call(message, CONTROL_INTERFACE, "Invoke"))
         reply = call_invoke(bus, message);
+    else if (dbus_message_is_method_call(message, PROPERTIES_INTERFACE, "Get"))
+        reply = call_get_property(bus, message);
+    else if (dbus_message_is_method_call(message, PROPERTIES_INTERFACE, "GetAll"))
+        reply = call_get_all_properties(bus, message);
+    else if (dbus_message_is_method_call(message, PROPERTIES_INTERFACE, "Set"))
+        reply = call_set_property(bus, message);
     else if (dbus_message_is_method_call(message, "org.freedesktop.DBus.Introspectable",
                                          "Introspect"))
         reply = reply_introspect(message);

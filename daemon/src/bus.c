@@ -349,7 +349,10 @@ static DBusMessage *call_notify(struct nabud_bus *bus, DBusMessage *message)
     if (id == 0)
         return dbus_message_new_error(message, DBUS_ERROR_NO_MEMORY, "Out of memory");
     arm_timer(bus);
-    nabud_control_posted(bus, id);
+    if (bus->do_not_disturb && input.urgency != NABU_URGENCY_CRITICAL)
+        bus->suppressed_id = id;
+    else
+        nabud_control_posted(bus, id);
     reply = dbus_message_new_method_return(message);
     if (reply)
         dbus_message_append_args(reply, DBUS_TYPE_UINT32, &id, DBUS_TYPE_INVALID);
@@ -401,6 +404,12 @@ static DBusHandlerResult handle_message(DBusConnection *connection,
         return DBUS_HANDLER_RESULT_NEED_MEMORY;
     dbus_connection_send(connection, reply, NULL);
     dbus_message_unref(reply);
+    if (bus->suppressed_id) {
+        uint32_t id = bus->suppressed_id;
+
+        bus->suppressed_id = 0;
+        nabud_bus_close_note(bus, id, NABU_CLOSE_UNDEFINED);
+    }
     return DBUS_HANDLER_RESULT_HANDLED;
 }
 

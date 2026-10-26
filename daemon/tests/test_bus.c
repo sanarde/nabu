@@ -432,6 +432,110 @@ static void invoke(DBusConnection *c, uint32_t id, const char *key)
         dbus_message_unref(reply);
 }
 
+static int dnd_get(DBusConnection *c)
+{
+    DBusMessage *message = dbus_message_new_method_call(
+        CTL_NAME, CTL_PATH, "org.freedesktop.DBus.Properties", "Get");
+    DBusMessage *reply;
+    DBusMessageIter iter, variant;
+    const char *interface = CTL_IFACE, *name = "DoNotDisturb";
+    dbus_bool_t value = FALSE;
+
+    dbus_message_append_args(message, DBUS_TYPE_STRING, &interface, DBUS_TYPE_STRING, &name,
+                             DBUS_TYPE_INVALID);
+    reply = dbus_connection_send_with_reply_and_block(c, message, 5000, NULL);
+    dbus_message_unref(message);
+    CHECK(reply != NULL);
+    if (!reply)
+        return 0;
+    CHECK(dbus_message_iter_init(reply, &iter));
+    dbus_message_iter_recurse(&iter, &variant);
+    CHECK(dbus_message_iter_get_arg_type(&variant) == DBUS_TYPE_BOOLEAN);
+    dbus_message_iter_get_basic(&variant, &value);
+    dbus_message_unref(reply);
+    return value;
+}
+
+static void dnd_set(DBusConnection *c, int enabled)
+{
+    DBusMessage *message = dbus_message_new_method_call(
+        CTL_NAME, CTL_PATH, "org.freedesktop.DBus.Properties", "Set");
+    DBusMessage *reply;
+    DBusMessageIter iter, variant;
+    const char *interface = CTL_IFACE, *name = "DoNotDisturb";
+    dbus_bool_t value = enabled;
+
+    dbus_message_append_args(message, DBUS_TYPE_STRING, &interface, DBUS_TYPE_STRING, &name,
+                             DBUS_TYPE_INVALID);
+    dbus_message_iter_init_append(message, &iter);
+    dbus_message_iter_open_container(&iter, DBUS_TYPE_VARIANT, "b", &variant);
+    dbus_message_iter_append_basic(&variant, DBUS_TYPE_BOOLEAN, &value);
+    dbus_message_iter_close_container(&iter, &variant);
+    reply = dbus_connection_send_with_reply_and_block(c, message, 5000, NULL);
+    dbus_message_unref(message);
+    CHECK(reply != NULL);
+    if (reply)
+        dbus_message_unref(reply);
+}
+
+static int wait_properties_changed(DBusConnection *c, int timeout_ms)
+{
+    for (int waited = 0; waited <= timeout_ms; waited += 50) {
+        DBusMessage *message;
+
+        dbus_connection_read_write(c, 50);
+        while ((message = dbus_connection_pop_message(c))) {
+            int found = dbus_message_is_signal(message, "org.freedesktop.DBus.Properties",
+                                               "PropertiesChanged");
+
+            dbus_message_unref(message);
+            if (found)
+                return 1;
+        }
+    }
+    return 0;
+}
+
+static void check_do_not_disturb(DBusConnection *c)
+{
+    DBusMessage *reply;
+    uint32_t id, reason = 0;
+
+    dbus_bus_add_match(c, "type='signal',interface='org.freedesktop.DBus.Properties'", NULL);
+    CHECK(!dnd_get(c));
+    dnd_set(c, 1);
+    CHECK(wait_properties_changed(c, 2000));
+    CHECK(dnd_get(c));
+
+    hint_transient = FALSE;
+    id = notify(c, 0, "dnd-hidden", 0);
+    CHECK(wait_closed(c, id, &reason, 2000));
+    CHECK(reason == 4);
+    reply = ctl_call(c, "GetActive", 0, 0);
+    CHECK(!has_summary(reply, 3, "dnd-hidden"));
+    dbus_message_unref(reply);
+    reply = ctl_call(c, "GetHistory", 0, 0);
+    CHECK(has_summary(reply, 5, "dnd-hidden"));
+    dbus_message_unref(reply);
+
+    id = notify_urgency(c, 0, "dnd-critical", 0, 2);
+    CHECK(wait_posted(c, id, 2000));
+    reply = ctl_call(c, "GetActive", 0, 0);
+    CHECK(has_summary(reply, 3, "dnd-critical"));
+    dbus_message_unref(reply);
+    close_notification(c, id);
+
+    dnd_set(c, 0);
+    CHECK(wait_properties_changed(c, 2000));
+    CHECK(!dnd_get(c));
+    id = notify(c, 0, "dnd-off", 0);
+    CHECK(wait_posted(c, id, 2000));
+    close_notification(c, id);
+
+    dbus_message_unref(ctl_call(c, "ClearHistory", 0, 0));
+    hint_transient = TRUE;
+}
+
 static void check_invoke(DBusConnection *c)
 {
     DBusMessage *reply;
@@ -493,6 +597,7 @@ int main(int argc, char **argv)
     check_history();
     check_control(c);
     check_invoke(c);
+    check_do_not_disturb(c);
 
     second = spawn(argv[1]);
     CHECK(waitpid(second, &status, 0) == second);
