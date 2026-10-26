@@ -1,10 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 #include <dbus/dbus.h>
+#include <ftw.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -93,8 +95,9 @@ static void check_introspection(DBusConnection *c)
     dbus_message_unref(reply);
 }
 
-static char state_dir[] = "/tmp/nabu-state-XXXXXX";
-static char history_file[160];
+static char root[] = "/tmp/nabu-test-XXXXXX";
+static char state_dir[160], run_dir[160], config_dir[160], cfgd_dir[160];
+static char history_file[200];
 static dbus_bool_t hint_transient = TRUE;
 static dbus_bool_t hint_resident = FALSE;
 
@@ -560,33 +563,157 @@ static void check_invoke(DBusConnection *c)
     hint_resident = FALSE;
 }
 
-static pid_t spawn(const char *path)
+static void cfgd_set(DBusConnection *c, const char *key, const char *value)
+{
+    DBusMessage *message = dbus_message_new_method_call(
+        "org.nuros.sanar.cfgd", "/org/nuros/sanar/cfgd", "org.nuros.sanar.Cfgd", "Set");
+    DBusMessage *reply;
+
+    dbus_message_append_args(message, DBUS_TYPE_STRING, &key, DBUS_TYPE_STRING, &value,
+                             DBUS_TYPE_INVALID);
+    reply = dbus_connection_send_with_reply_and_block(c, message, 5000, NULL);
+    dbus_message_unref(message);
+    CHECK(reply != NULL);
+    if (reply)
+        dbus_message_unref(reply);
+}
+
+static void post_and_expire(DBusConnection *c, const char *summary)
+{
+    uint32_t id, reason = 0;
+
+    hint_transient = FALSE;
+    id = notify(c, 0, summary, 50);
+    CHECK(wait_closed(c, id, &reason, 2000));
+    hint_transient = TRUE;
+}
+
+static int wait_history_count(DBusConnection *c, size_t count, int timeout_ms)
+{
+    for (int waited = 0; waited <= timeout_ms; waited += 100) {
+        DBusMessage *reply = ctl_call(c, "GetHistory", 0, 0);
+        size_t have = count_items(reply);
+
+        dbus_message_unref(reply);
+        if (have == count)
+            return 1;
+        usleep(100000);
+    }
+    return 0;
+}
+
+static void check_config(DBusConnection *c)
+{
+    DBusMessage *reply;
+    uint32_t id, reason = 0;
+
+    id = notify(c, 0, "default timeout", -1);
+    CHECK(!wait_closed(c, id, &reason, 250));
+    CHECK(wait_closed(c, id, &reason, 2500));
+    CHECK(reason == 1);
+
+    dbus_message_unref(ctl_call(c, "ClearHistory", 0, 0));
+    for (int i = 0; i < 5; i++) {
+        char summary[16];
+
+        snprintf(summary, sizeof(summary), "h%d", i);
+        post_and_expire(c, summary);
+    }
+    reply = ctl_call(c, "GetHistory", 0, 0);
+    CHECK(count_items(reply) == 3);
+    CHECK(has_summary(reply, 5, "h4") && !has_summary(reply, 5, "h1"));
+    dbus_message_unref(reply);
+
+    cfgd_set(c, "/org/nuros/sanar/nabu/history-limit", "1");
+    CHECK(wait_history_count(c, 1, 3000));
+    reply = ctl_call(c, "GetHistory", 0, 0);
+    CHECK(has_summary(reply, 5, "h4"));
+    dbus_message_unref(reply);
+}
+
+static int remove_entry(const char *path, const struct stat *st, int type, struct FTW *ftw)
+{
+    (void)st;
+    (void)type;
+    (void)ftw;
+    return remove(path);
+}
+
+static pid_t spawn(const char *path, const char *const *args)
 {
     pid_t pid = fork();
 
     if (pid == 0) {
-        execl(path, path, (char *)NULL);
+        execv(path, (char *const *)args);
         _exit(127);
     }
     return pid;
 }
 
+static int wait_for_owner(DBusConnection *c, const char *name)
+{
+    for (int i = 0; i < 100; i++) {
+        if (dbus_bus_name_has_owner(c, name, NULL))
+            return 1;
+        usleep(50000);
+    }
+    return 0;
+}
+
+static void write_config(void)
+{
+    char path[200];
+    FILE *file;
+
+    snprintf(path, sizeof(path), "%s/cfgd.conf", config_dir);
+    file = fopen(path, "w");
+    CHECK(file != NULL);
+    if (!file)
+        return;
+    fputs("[/org/nuros/sanar/nabu]\ndefault-timeout = 500\nhistory-limit = 3\n", file);
+    fclose(file);
+}
+
 int main(int argc, char **argv)
 {
+    const char *daemon_args[] = {NULL, NULL};
+    const char *cfgdd_args[] = {NULL, "-c", config_dir, "-r", cfgd_dir, "-s", NULL, NULL};
     DBusConnection *c;
-    pid_t daemon, second;
+    pid_t daemon, cfgdd = 0, second;
     int status;
+    int with_cfgd = argc == 4;
 
-    if (argc != 2 || !mkdtemp(state_dir))
+    if (argc != 2 && argc != 4)
+        return 1;
+    if (!mkdtemp(root))
+        return 1;
+    snprintf(state_dir, sizeof(state_dir), "%s/state", root);
+    snprintf(run_dir, sizeof(run_dir), "%s/run", root);
+    snprintf(config_dir, sizeof(config_dir), "%s/config", root);
+    snprintf(cfgd_dir, sizeof(cfgd_dir), "%s/run/cfgd", root);
+    snprintf(history_file, sizeof(history_file), "%s/nabu/history", state_dir);
+    if (mkdir(state_dir, 0700) != 0 || mkdir(run_dir, 0700) != 0 ||
+        mkdir(config_dir, 0700) != 0)
         return 1;
     setenv("XDG_STATE_HOME", state_dir, 1);
-    snprintf(history_file, sizeof(history_file), "%s/nabu/history", state_dir);
+    setenv("XDG_RUNTIME_DIR", run_dir, 1);
+
     c = dbus_bus_get_private(DBUS_BUS_SESSION, NULL);
     CHECK(c != NULL);
     if (!c)
         return 1;
 
-    daemon = spawn(argv[1]);
+    if (with_cfgd) {
+        write_config();
+        cfgdd_args[0] = argv[2];
+        cfgdd_args[6] = argv[3];
+        cfgdd = spawn(argv[2], cfgdd_args);
+        CHECK(cfgdd > 0);
+        CHECK(wait_for_owner(c, "org.nuros.sanar.cfgd"));
+    }
+
+    daemon_args[0] = argv[1];
+    daemon = spawn(argv[1], daemon_args);
     CHECK(daemon > 0);
     CHECK(wait_for_name(c));
 
@@ -598,20 +725,23 @@ int main(int argc, char **argv)
     check_control(c);
     check_invoke(c);
     check_do_not_disturb(c);
+    if (with_cfgd)
+        check_config(c);
 
-    second = spawn(argv[1]);
+    second = spawn(argv[1], daemon_args);
     CHECK(waitpid(second, &status, 0) == second);
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) != 0);
 
     kill(daemon, SIGTERM);
     CHECK(waitpid(daemon, &status, 0) == daemon);
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    if (with_cfgd) {
+        kill(cfgdd, SIGTERM);
+        CHECK(waitpid(cfgdd, &status, 0) == cfgdd);
+    }
 
     dbus_connection_close(c);
     dbus_connection_unref(c);
-    unlink(history_file);
-    snprintf(history_file, sizeof(history_file), "%s/nabu", state_dir);
-    rmdir(history_file);
-    rmdir(state_dir);
+    nftw(root, remove_entry, 16, FTW_DEPTH | FTW_PHYS);
     return check_failures ? 1 : 0;
 }

@@ -1,0 +1,17 @@
+[schema]
+id = org.nuros.sanar.nabu
+path = /org/nuros/sanar/nabu/
+
+[default-timeout]
+type = i
+default = 5000
+min = 500
+max = 120000
+summary = Milliseconds until a notification closes when the sender does not give a timeout
+
+[history-limit]
+type = i
+default = 200
+min = 0
+max = 10000
+summary = Number of closed notifications kept in the history

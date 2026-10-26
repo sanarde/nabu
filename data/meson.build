@@ -20,3 +20,8 @@ if unit_dir != ''
     install_dir: unit_dir,
   )
 endif
+
+install_data(
+  'org.nuros.sanar.nabu.schema',
+  install_dir: get_option('datadir') / 'cfgd' / 'schemas',
+)

@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include "bus.h"
+#include "config.h"
 #include "loop.h"
 
 static int open_signal_fd(void)
@@ -50,6 +51,7 @@ static int history_path(char *buffer, size_t size)
 int main(void)
 {
     struct nabud_bus bus = {0};
+    struct nabud_config config = {0};
     char path[PATH_MAX];
     struct nabud_source signal_source = {NABUD_SRC_SIGNAL};
     struct nabud_source timer_source = {NABUD_SRC_TIMER};
@@ -70,6 +72,8 @@ int main(void)
     if (nabud_bus_open(&bus, epfd, timer_fd,
                        history_path(path, sizeof(path)) == 0 ? path : NULL) != 0)
         return 1;
+    if (nabud_config_open(&config, &bus, epfd) != 0)
+        fprintf(stderr, "nabud: cfgd is not available, using the default settings\n");
 
     for (;;) {
         struct epoll_event event;
@@ -92,6 +96,10 @@ int main(void)
             nabud_bus_expire(&bus);
             continue;
         }
+        if (source->kind == NABUD_SRC_CONFIG) {
+            nabud_config_dispatch(&config);
+            continue;
+        }
         nabud_bus_event(&bus, (struct nabud_bus_watch *)source, event.events);
         if (!bus.connection) {
             rc = 0;
@@ -99,6 +107,7 @@ int main(void)
         }
     }
 
+    nabud_config_close(&config);
     nabud_bus_close(&bus);
     return rc;
 }
