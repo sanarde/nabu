@@ -269,6 +269,15 @@ int nabu_history_add(struct nabu_history *history, const struct nabu_note *note,
     return save(history) == 0 ? 0 : -2;
 }
 
+int nabu_history_set_limit(struct nabu_history *history, size_t limit)
+{
+    history->limit = limit;
+    if (history->count <= limit)
+        return 0;
+    drop_oldest(history, history->count - limit);
+    return save(history) == 0 ? 0 : -2;
+}
+
 int nabu_history_clear(struct nabu_history *history)
 {
     drop_oldest(history, history->count);

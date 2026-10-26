@@ -95,6 +95,19 @@ static void test_close(void)
     nabu_notes_free(&notes);
 }
 
+static void test_default_timeout(void)
+{
+    struct nabu_notes notes;
+    uint32_t id;
+
+    nabu_notes_init(&notes);
+    CHECK(notes.default_timeout_ms == NABU_DEFAULT_TIMEOUT_MS);
+    notes.default_timeout_ms = 1200;
+    id = nabu_notes_post(&notes, 0, &base, 1000);
+    CHECK(nabu_notes_find(&notes, id)->expires_ms == 2200);
+    nabu_notes_free(&notes);
+}
+
 static void test_critical_never_expires(void)
 {
     struct nabu_notes notes;
@@ -165,6 +178,7 @@ int main(void)
     test_replace();
     test_timeouts();
     test_close();
+    test_default_timeout();
     test_critical_never_expires();
     test_hints_and_actions();
     test_many();

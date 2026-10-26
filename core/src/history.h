@@ -44,6 +44,12 @@ void nabu_history_close(struct nabu_history *history);
 int nabu_history_add(struct nabu_history *history, const struct nabu_note *note,
                      uint8_t reason, int64_t time);
 
+/*
+ * Changes the limit and drops the oldest entries over it. The file is saved
+ * only when entries were dropped. Returns -2 when saving failed.
+ */
+int nabu_history_set_limit(struct nabu_history *history, size_t limit);
+
 /* Removes all entries and saves the file. Returns -2 when saving failed. */
 int nabu_history_clear(struct nabu_history *history);
 

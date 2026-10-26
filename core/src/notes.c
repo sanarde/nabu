@@ -16,6 +16,7 @@ int64_t nabu_now_ms(void)
 void nabu_notes_init(struct nabu_notes *notes)
 {
     memset(notes, 0, sizeof(*notes));
+    notes->default_timeout_ms = NABU_DEFAULT_TIMEOUT_MS;
 }
 
 static void note_clear(struct nabu_note *note)
@@ -40,14 +41,15 @@ void nabu_notes_free(struct nabu_notes *notes)
     nabu_notes_init(notes);
 }
 
-static int64_t expiry_for(const struct nabu_note_input *input, int64_t now_ms)
+static int64_t expiry_for(const struct nabu_notes *notes, const struct nabu_note_input *input,
+                         int64_t now_ms)
 {
     int32_t timeout_ms = input->timeout_ms;
 
     if (input->urgency == NABU_URGENCY_CRITICAL || timeout_ms == 0)
         return -1;
     if (timeout_ms < 0)
-        timeout_ms = NABU_DEFAULT_TIMEOUT_MS;
+        timeout_ms = notes->default_timeout_ms;
     return now_ms + timeout_ms;
 }
 
@@ -74,7 +76,8 @@ static int copy_actions(struct nabu_note *note, const struct nabu_note_input *in
     return 0;
 }
 
-static int note_fill(struct nabu_note *note, const struct nabu_note_input *input,
+static int note_fill(const struct nabu_notes *notes, struct nabu_note *note,
+                     const struct nabu_note_input *input,
                      int64_t now_ms)
 {
     note->app_name = copy_string(input->app_name);
@@ -86,7 +89,7 @@ static int note_fill(struct nabu_note *note, const struct nabu_note_input *input
     note->urgency = input->urgency;
     note->transient = input->transient;
     note->resident = input->resident;
-    note->expires_ms = expiry_for(input, now_ms);
+    note->expires_ms = expiry_for(notes, input, now_ms);
     if (note->app_name && note->app_icon && note->summary && note->body &&
         note->desktop_entry && note->image_path && copy_actions(note, input) == 0)
         return 0;
@@ -122,7 +125,7 @@ uint32_t nabu_notes_post(struct nabu_notes *notes, uint32_t replaces_id,
     struct nabu_note fresh = {0};
     struct nabu_note *existing = replaces_id ? note_at(notes, replaces_id) : NULL;
 
-    if (note_fill(&fresh, input, now_ms) != 0)
+    if (note_fill(notes, &fresh, input, now_ms) != 0)
         return 0;
 
     if (existing) {

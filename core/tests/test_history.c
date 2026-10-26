@@ -58,6 +58,33 @@ static void test_limit(void)
     nabu_history_close(&history);
 }
 
+static void test_set_limit(void)
+{
+    struct nabu_history history;
+    char summary[16];
+
+    CHECK(nabu_history_open(&history, path, 10) == 0);
+    for (int i = 0; i < 4; i++) {
+        struct nabu_note note;
+
+        snprintf(summary, sizeof(summary), "n%d", i);
+        note = make_note(summary, "");
+        CHECK(nabu_history_add(&history, &note, NABU_CLOSE_EXPIRED, i) == 0);
+    }
+    CHECK(nabu_history_set_limit(&history, 2) == 0);
+    CHECK(history.count == 2);
+    CHECK_STR(history.items[0].summary, "n2");
+    CHECK(nabu_history_set_limit(&history, 5) == 0);
+    CHECK(history.count == 2 && history.limit == 5);
+    nabu_history_close(&history);
+
+    CHECK(nabu_history_open(&history, path, 10) == 0);
+    CHECK(history.count == 2);
+    CHECK_STR(history.items[0].summary, "n2");
+    CHECK(nabu_history_clear(&history) == 0);
+    nabu_history_close(&history);
+}
+
 static void test_persistence(void)
 {
     struct nabu_history history;
@@ -160,6 +187,7 @@ int main(void)
 
     test_memory_only();
     test_limit();
+    test_set_limit();
     test_persistence();
     test_clear();
     test_corrupt();

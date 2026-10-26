@@ -62,6 +62,7 @@ struct nabu_notes {
     size_t count;
     size_t capacity;
     uint32_t last_id;
+    int32_t default_timeout_ms;
 };
 
 int64_t nabu_now_ms(void);
@@ -71,7 +72,7 @@ void nabu_notes_free(struct nabu_notes *notes);
 
 /*
  * Adds a notification, or replaces the one with replaces_id in place. A
- * timeout of -1 selects the default and 0 means no expiry. Critical
+ * timeout of -1 selects default_timeout_ms and 0 means no expiry. Critical
  * notifications never expire. Returns the id, or 0 when memory is exhausted.
  */
 uint32_t nabu_notes_post(struct nabu_notes *notes, uint32_t replaces_id,
