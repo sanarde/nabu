@@ -83,10 +83,7 @@ bool nabu_notes_close(struct nabu_notes *notes, uint32_t id);
 /* Returns the earliest expiry time in milliseconds, or -1 when none is set. */
 int64_t nabu_notes_next_expiry(const struct nabu_notes *notes);
 
-/*
- * Removes the notifications that expired at now_ms and stores their ids in
- * ids, which must hold notes->count entries. Returns the number removed.
- */
-size_t nabu_notes_expire(struct nabu_notes *notes, int64_t now_ms, uint32_t *ids);
+/* Returns the id of a notification that has expired at now_ms, or 0 when none has. */
+uint32_t nabu_notes_next_expired(const struct nabu_notes *notes, int64_t now_ms);
 
 #endif

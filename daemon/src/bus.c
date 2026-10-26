@@ -162,6 +162,14 @@ static void emit_closed(struct nabud_bus *bus, uint32_t id, uint32_t reason)
     dbus_message_unref(signal);
 }
 
+static bool close_note(struct nabud_bus *bus, uint32_t id, uint32_t reason)
+{
+    if (!nabu_notes_close(&bus->notes, id))
+        return false;
+    emit_closed(bus, id, reason);
+    return true;
+}
+
 static bool read_basic(DBusMessageIter *iter, int type, void *out)
 {
     if (dbus_message_iter_get_arg_type(iter) != type)
@@ -305,10 +313,8 @@ static DBusMessage *call_close(struct nabud_bus *bus, DBusMessage *message)
     if (!dbus_message_get_args(message, NULL, DBUS_TYPE_UINT32, &id, DBUS_TYPE_INVALID))
         return dbus_message_new_error(message, DBUS_ERROR_INVALID_ARGS,
                                       "Expected one unsigned integer");
-    if (nabu_notes_close(&bus->notes, id)) {
+    if (close_note(bus, id, NABU_CLOSE_CALLED))
         arm_timer(bus);
-        emit_closed(bus, id, NABU_CLOSE_CALLED);
-    }
     return dbus_message_new_method_return(message);
 }
 
@@ -414,19 +420,14 @@ void nabud_bus_close(struct nabud_bus *bus)
 
 void nabud_bus_expire(struct nabud_bus *bus)
 {
+    int64_t now = nabu_now_ms();
     uint64_t ticks;
-    uint32_t *ids;
-    size_t count;
+    uint32_t id;
 
     if (read(bus->timer_fd, &ticks, sizeof(ticks)) != sizeof(ticks))
         return;
-    ids = malloc((bus->notes.count + 1) * sizeof(*ids));
-    if (!ids)
-        return;
-    count = nabu_notes_expire(&bus->notes, nabu_now_ms(), ids);
-    for (size_t i = 0; i < count; i++)
-        emit_closed(bus, ids[i], NABU_CLOSE_EXPIRED);
-    free(ids);
+    while ((id = nabu_notes_next_expired(&bus->notes, now)) != 0)
+        close_note(bus, id, NABU_CLOSE_EXPIRED);
     arm_timer(bus);
 }
 

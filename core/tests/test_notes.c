@@ -68,19 +68,14 @@ static void test_timeouts(void)
     shorter = nabu_notes_post(&notes, 0, &input, 1000);
     CHECK(nabu_notes_next_expiry(&notes) == 1500);
 
-    {
-        uint32_t ids[3];
-        size_t n = nabu_notes_expire(&notes, 1499, ids);
-
-        CHECK(n == 0);
-        n = nabu_notes_expire(&notes, 1500, ids);
-        CHECK(n == 1 && ids[0] == shorter);
-        CHECK(nabu_notes_next_expiry(&notes) == 4000);
-        n = nabu_notes_expire(&notes, 9000, ids);
-        CHECK(n == 1 && ids[0] == longer);
-        CHECK(notes.count == 1);
-        CHECK(nabu_notes_find(&notes, forever) != NULL);
-    }
+    CHECK(nabu_notes_next_expired(&notes, 1499) == 0);
+    CHECK(nabu_notes_next_expired(&notes, 1500) == shorter);
+    CHECK(nabu_notes_close(&notes, shorter));
+    CHECK(nabu_notes_next_expiry(&notes) == 4000);
+    CHECK(nabu_notes_next_expired(&notes, 9000) == longer);
+    CHECK(nabu_notes_close(&notes, longer));
+    CHECK(nabu_notes_next_expired(&notes, 9000) == 0);
+    CHECK(nabu_notes_find(&notes, forever) != NULL);
     nabu_notes_free(&notes);
 }
 
@@ -104,14 +99,13 @@ static void test_critical_never_expires(void)
 {
     struct nabu_notes notes;
     struct nabu_note_input input = base;
-    uint32_t ids[2];
 
     nabu_notes_init(&notes);
     input.urgency = NABU_URGENCY_CRITICAL;
     input.timeout_ms = 100;
     CHECK(nabu_notes_post(&notes, 0, &input, 0) != 0);
     CHECK(nabu_notes_next_expiry(&notes) == -1);
-    CHECK(nabu_notes_expire(&notes, 100000, ids) == 0);
+    CHECK(nabu_notes_next_expired(&notes, 100000) == 0);
     CHECK(notes.count == 1);
     nabu_notes_free(&notes);
 }

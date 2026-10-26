@@ -180,20 +180,13 @@ int64_t nabu_notes_next_expiry(const struct nabu_notes *notes)
     return next;
 }
 
-size_t nabu_notes_expire(struct nabu_notes *notes, int64_t now_ms, uint32_t *ids)
+uint32_t nabu_notes_next_expired(const struct nabu_notes *notes, int64_t now_ms)
 {
-    size_t removed = 0;
-    size_t i = 0;
-
-    while (i < notes->count) {
+    for (size_t i = 0; i < notes->count; i++) {
         int64_t at = notes->items[i].expires_ms;
 
-        if (at >= 0 && at <= now_ms) {
-            ids[removed++] = notes->items[i].id;
-            remove_at(notes, i);
-        } else {
-            i++;
-        }
+        if (at >= 0 && at <= now_ms)
+            return notes->items[i].id;
     }
-    return removed;
+    return 0;
 }
