@@ -196,7 +196,7 @@ static bool parse_notify(DBusMessage *message, uint32_t *replaces_id,
 
 static DBusMessage *call_notify(struct nabud_bus *bus, DBusMessage *message)
 {
-    struct nabu_note_input input;
+    struct nabu_note_input input = {.urgency = NABU_URGENCY_NORMAL};
     uint32_t replaces_id, id;
     DBusMessage *reply;
 

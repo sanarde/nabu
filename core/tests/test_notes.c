@@ -7,6 +7,7 @@ static const struct nabu_note_input base = {
     .app_icon = "",
     .summary = "summary",
     .body = "body",
+    .urgency = NABU_URGENCY_NORMAL,
     .timeout_ms = -1,
 };
 
@@ -99,6 +100,60 @@ static void test_close(void)
     nabu_notes_free(&notes);
 }
 
+static void test_critical_never_expires(void)
+{
+    struct nabu_notes notes;
+    struct nabu_note_input input = base;
+    uint32_t ids[2];
+
+    nabu_notes_init(&notes);
+    input.urgency = NABU_URGENCY_CRITICAL;
+    input.timeout_ms = 100;
+    CHECK(nabu_notes_post(&notes, 0, &input, 0) != 0);
+    CHECK(nabu_notes_next_expiry(&notes) == -1);
+    CHECK(nabu_notes_expire(&notes, 100000, ids) == 0);
+    CHECK(notes.count == 1);
+    nabu_notes_free(&notes);
+}
+
+static void test_hints_and_actions(void)
+{
+    static const char *const actions[] = {"default", "Open", "mute", "Mute", "stray"};
+    struct nabu_notes notes;
+    struct nabu_note_input input = base;
+    const struct nabu_note *note;
+    uint32_t id;
+
+    nabu_notes_init(&notes);
+    input.actions = actions;
+    input.action_count = 5;
+    input.desktop_entry = "org.example.app";
+    input.image_path = "/tmp/image.png";
+    input.urgency = NABU_URGENCY_LOW;
+    input.transient = true;
+    input.resident = true;
+    id = nabu_notes_post(&notes, 0, &input, 0);
+    note = nabu_notes_find(&notes, id);
+    CHECK(note != NULL);
+    CHECK(note->action_count == 4);
+    CHECK_STR(note->actions[0], "default");
+    CHECK_STR(note->actions[1], "Open");
+    CHECK_STR(note->actions[2], "mute");
+    CHECK_STR(note->actions[3], "Mute");
+    CHECK_STR(note->desktop_entry, "org.example.app");
+    CHECK_STR(note->image_path, "/tmp/image.png");
+    CHECK(note->urgency == NABU_URGENCY_LOW);
+    CHECK(note->transient && note->resident);
+
+    CHECK(nabu_notes_post(&notes, id, &base, 0) == id);
+    note = nabu_notes_find(&notes, id);
+    CHECK(note->action_count == 0 && note->actions == NULL);
+    CHECK_STR(note->desktop_entry, "");
+    CHECK(note->urgency == NABU_URGENCY_NORMAL);
+    CHECK(!note->transient && !note->resident);
+    nabu_notes_free(&notes);
+}
+
 static void test_many(void)
 {
     struct nabu_notes notes;
@@ -116,6 +171,8 @@ int main(void)
     test_replace();
     test_timeouts();
     test_close();
+    test_critical_never_expires();
+    test_hints_and_actions();
     test_many();
     return check_failures ? 1 : 0;
 }

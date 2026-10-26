@@ -24,6 +24,11 @@ static void note_clear(struct nabu_note *note)
     free(note->app_icon);
     free(note->summary);
     free(note->body);
+    free(note->desktop_entry);
+    free(note->image_path);
+    for (size_t i = 0; i < note->action_count; i++)
+        free(note->actions[i]);
+    free(note->actions);
     memset(note, 0, sizeof(*note));
 }
 
@@ -35,29 +40,57 @@ void nabu_notes_free(struct nabu_notes *notes)
     nabu_notes_init(notes);
 }
 
-static int64_t expiry_for(int32_t timeout_ms, int64_t now_ms)
+static int64_t expiry_for(const struct nabu_note_input *input, int64_t now_ms)
 {
-    if (timeout_ms == 0)
+    int32_t timeout_ms = input->timeout_ms;
+
+    if (input->urgency == NABU_URGENCY_CRITICAL || timeout_ms == 0)
         return -1;
     if (timeout_ms < 0)
         timeout_ms = NABU_DEFAULT_TIMEOUT_MS;
     return now_ms + timeout_ms;
 }
 
+static char *copy_string(const char *text)
+{
+    return strdup(text ? text : "");
+}
+
+static int copy_actions(struct nabu_note *note, const struct nabu_note_input *input)
+{
+    size_t count = input->action_count & ~(size_t)1;
+
+    if (count == 0)
+        return 0;
+    note->actions = calloc(count, sizeof(*note->actions));
+    if (!note->actions)
+        return -1;
+    for (size_t i = 0; i < count; i++) {
+        note->actions[i] = copy_string(input->actions[i]);
+        note->action_count = i + 1;
+        if (!note->actions[i])
+            return -1;
+    }
+    return 0;
+}
+
 static int note_fill(struct nabu_note *note, const struct nabu_note_input *input,
                      int64_t now_ms)
 {
-    note->app_name = strdup(input->app_name);
-    note->app_icon = strdup(input->app_icon);
-    note->summary = strdup(input->summary);
-    note->body = strdup(input->body);
-    note->expires_ms = expiry_for(input->timeout_ms, now_ms);
-    if (note->app_name && note->app_icon && note->summary && note->body)
+    note->app_name = copy_string(input->app_name);
+    note->app_icon = copy_string(input->app_icon);
+    note->summary = copy_string(input->summary);
+    note->body = copy_string(input->body);
+    note->desktop_entry = copy_string(input->desktop_entry);
+    note->image_path = copy_string(input->image_path);
+    note->urgency = input->urgency;
+    note->transient = input->transient;
+    note->resident = input->resident;
+    note->expires_ms = expiry_for(input, now_ms);
+    if (note->app_name && note->app_icon && note->summary && note->body &&
+        note->desktop_entry && note->image_path && copy_actions(note, input) == 0)
         return 0;
-    free(note->app_name);
-    free(note->app_icon);
-    free(note->summary);
-    free(note->body);
+    note_clear(note);
     return -1;
 }
 
