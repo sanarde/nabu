@@ -8,6 +8,7 @@
 #define CONTROL_NAME "org.nuros.sanar.nabu"
 #define CONTROL_PATH "/org/nuros/sanar/nabu"
 #define CONTROL_INTERFACE "org.nuros.sanar.Nabu"
+#define ERROR_PREFIX "org.nuros.sanar.Nabu.Error."
 
 #define NOTE_SIGNATURE "(ussssssasyb)"
 #define ENTRY_SIGNATURE "(xyyssssss)"
@@ -27,6 +28,10 @@ static const char introspection_xml[] =
     "    <method name=\"ClearHistory\"/>\n"
     "    <method name=\"Dismiss\">\n"
     "      <arg type=\"u\" name=\"id\" direction=\"in\"/>\n"
+    "    </method>\n"
+    "    <method name=\"Invoke\">\n"
+    "      <arg type=\"u\" name=\"id\" direction=\"in\"/>\n"
+    "      <arg type=\"s\" name=\"action_key\" direction=\"in\"/>\n"
     "    </method>\n"
     "    <signal name=\"Posted\">\n"
     "      <arg type=\"" NOTE_SIGNATURE "\" name=\"notification\"/>\n"
@@ -131,6 +136,21 @@ static DBusMessage *call_dismiss(struct nabud_bus *bus, DBusMessage *message)
     return dbus_message_new_method_return(message);
 }
 
+static DBusMessage *call_invoke(struct nabud_bus *bus, DBusMessage *message)
+{
+    uint32_t id;
+    const char *key;
+
+    if (!dbus_message_get_args(message, NULL, DBUS_TYPE_UINT32, &id, DBUS_TYPE_STRING,
+                               &key, DBUS_TYPE_INVALID))
+        return dbus_message_new_error(message, DBUS_ERROR_INVALID_ARGS,
+                                      "Expected an unsigned integer and a string");
+    if (!nabud_bus_invoke(bus, id, key))
+        return dbus_message_new_error(message, ERROR_PREFIX "NotFound",
+                                      "No such notification or action");
+    return dbus_message_new_method_return(message);
+}
+
 static DBusMessage *reply_introspect(DBusMessage *message)
 {
     DBusMessage *reply = dbus_message_new_method_return(message);
@@ -155,6 +175,8 @@ static DBusHandlerResult handle_message(DBusConnection *connection,
         reply = call_clear_history(bus, message);
     else if (dbus_message_is_method_call(message, CONTROL_INTERFACE, "Dismiss"))
         reply = call_dismiss(bus, message);
+    else if (dbus_message_is_method_call(message, CONTROL_INTERFACE, "Invoke"))
+        reply = call_invoke(bus, message);
     else if (dbus_message_is_method_call(message, "org.freedesktop.DBus.Introspectable",
                                          "Introspect"))
         reply = reply_introspect(message);

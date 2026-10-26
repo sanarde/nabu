@@ -17,7 +17,7 @@
 #define INTERFACE "org.freedesktop.Notifications"
 #define HISTORY_LIMIT 200
 
-static const char *const capabilities[] = {"body"};
+static const char *const capabilities[] = {"actions", "body"};
 
 static const char introspection_xml[] =
     "<!DOCTYPE node PUBLIC \"-//freedesktop//DTD D-BUS Object Introspection "
@@ -51,6 +51,10 @@ static const char introspection_xml[] =
     "    <signal name=\"NotificationClosed\">\n"
     "      <arg type=\"u\" name=\"id\"/>\n"
     "      <arg type=\"u\" name=\"reason\"/>\n"
+    "    </signal>\n"
+    "    <signal name=\"ActionInvoked\">\n"
+    "      <arg type=\"u\" name=\"id\"/>\n"
+    "      <arg type=\"s\" name=\"action_key\"/>\n"
     "    </signal>\n"
     "  </interface>\n"
     "  <interface name=\"org.freedesktop.DBus.Introspectable\">\n"
@@ -179,6 +183,39 @@ bool nabud_bus_close_note(struct nabud_bus *bus, uint32_t id, uint32_t reason)
     arm_timer(bus);
     emit_closed(bus, id, reason);
     nabud_control_closed(bus, id, reason);
+    return true;
+}
+
+static void emit_action(struct nabud_bus *bus, uint32_t id, const char *key)
+{
+    DBusMessage *signal;
+
+    if (!bus->connection)
+        return;
+    signal = dbus_message_new_signal(OBJECT_PATH, INTERFACE, "ActionInvoked");
+    if (!signal)
+        return;
+    dbus_message_append_args(signal, DBUS_TYPE_UINT32, &id, DBUS_TYPE_STRING, &key,
+                             DBUS_TYPE_INVALID);
+    dbus_connection_send(bus->connection, signal, NULL);
+    dbus_message_unref(signal);
+}
+
+bool nabud_bus_invoke(struct nabud_bus *bus, uint32_t id, const char *key)
+{
+    const struct nabu_note *note = nabu_notes_find(&bus->notes, id);
+    bool found = false, resident;
+
+    if (!note)
+        return false;
+    for (size_t i = 0; i + 1 < note->action_count && !found; i += 2)
+        found = strcmp(note->actions[i], key) == 0;
+    if (!found)
+        return false;
+    resident = note->resident;
+    emit_action(bus, id, key);
+    if (!resident)
+        nabud_bus_close_note(bus, id, NABU_CLOSE_DISMISSED);
     return true;
 }
 

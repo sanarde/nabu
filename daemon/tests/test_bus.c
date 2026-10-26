@@ -61,16 +61,18 @@ static void check_capabilities(DBusConnection *c)
     DBusMessage *reply = call(c, "GetCapabilities");
     const char **list = NULL;
     int count = 0;
-    int body = 0;
+    int body = 0, actions = 0;
 
     CHECK(reply != NULL);
     if (!reply)
         return;
     CHECK(dbus_message_get_args(reply, NULL, DBUS_TYPE_ARRAY, DBUS_TYPE_STRING, &list,
                                 &count, DBUS_TYPE_INVALID));
-    for (int i = 0; i < count; i++)
+    for (int i = 0; i < count; i++) {
         body |= strcmp(list[i], "body") == 0;
-    CHECK(body);
+        actions |= strcmp(list[i], "actions") == 0;
+    }
+    CHECK(body && actions);
     dbus_free_string_array((char **)list);
     dbus_message_unref(reply);
 }
@@ -94,6 +96,7 @@ static void check_introspection(DBusConnection *c)
 static char state_dir[] = "/tmp/nabu-state-XXXXXX";
 static char history_file[160];
 static dbus_bool_t hint_transient = TRUE;
+static dbus_bool_t hint_resident = FALSE;
 
 static void append_hint(DBusMessageIter *dict, const char *key, int type,
                         const char *signature, const void *value)
@@ -133,7 +136,10 @@ static uint32_t notify_urgency(DBusConnection *c, uint32_t replaces_id,
     if (urgency >= 0)
         append_hint(&array, "urgency", DBUS_TYPE_BYTE, "y", &level);
     append_hint(&array, "transient", DBUS_TYPE_BOOLEAN, "b", &yes);
-    append_hint(&array, "resident", DBUS_TYPE_STRING, "s", &wrong);
+    if (hint_resident)
+        append_hint(&array, "resident", DBUS_TYPE_BOOLEAN, "b", &yes);
+    else
+        append_hint(&array, "resident", DBUS_TYPE_STRING, "s", &wrong);
     append_hint(&array, "desktop-entry", DBUS_TYPE_STRING, "s", &entry);
     dbus_message_iter_close_container(&iter, &array);
     dbus_message_iter_append_basic(&iter, DBUS_TYPE_INT32, &timeout_ms);
@@ -370,6 +376,86 @@ static void check_control(DBusConnection *c)
     hint_transient = TRUE;
 }
 
+static int wait_action(DBusConnection *c, uint32_t id, const char *key, int timeout_ms)
+{
+    for (int waited = 0; waited <= timeout_ms; waited += 50) {
+        DBusMessage *message;
+
+        dbus_connection_read_write(c, 50);
+        while ((message = dbus_connection_pop_message(c))) {
+            uint32_t got_id;
+            const char *got_key;
+
+            if (dbus_message_is_signal(message, IFACE, "ActionInvoked") &&
+                dbus_message_get_args(message, NULL, DBUS_TYPE_UINT32, &got_id,
+                                      DBUS_TYPE_STRING, &got_key, DBUS_TYPE_INVALID) &&
+                got_id == id && strcmp(got_key, key) == 0) {
+                dbus_message_unref(message);
+                return 1;
+            }
+            dbus_message_unref(message);
+        }
+    }
+    return 0;
+}
+
+static void check_invoke_error(DBusConnection *c, uint32_t id, const char *key)
+{
+    DBusMessage *message = dbus_message_new_method_call(CTL_NAME, CTL_PATH, CTL_IFACE, "Invoke");
+    DBusMessage *reply;
+    DBusError error;
+
+    dbus_message_append_args(message, DBUS_TYPE_UINT32, &id, DBUS_TYPE_STRING, &key,
+                             DBUS_TYPE_INVALID);
+    dbus_error_init(&error);
+    reply = dbus_connection_send_with_reply_and_block(c, message, 5000, &error);
+    dbus_message_unref(message);
+    CHECK(reply == NULL);
+    CHECK(dbus_error_is_set(&error) &&
+          strcmp(error.name, "org.nuros.sanar.Nabu.Error.NotFound") == 0);
+    if (reply)
+        dbus_message_unref(reply);
+    dbus_error_free(&error);
+}
+
+static void invoke(DBusConnection *c, uint32_t id, const char *key)
+{
+    DBusMessage *message = dbus_message_new_method_call(CTL_NAME, CTL_PATH, CTL_IFACE, "Invoke");
+    DBusMessage *reply;
+
+    dbus_message_append_args(message, DBUS_TYPE_UINT32, &id, DBUS_TYPE_STRING, &key,
+                             DBUS_TYPE_INVALID);
+    reply = dbus_connection_send_with_reply_and_block(c, message, 5000, NULL);
+    dbus_message_unref(message);
+    CHECK(reply != NULL);
+    if (reply)
+        dbus_message_unref(reply);
+}
+
+static void check_invoke(DBusConnection *c)
+{
+    DBusMessage *reply;
+    uint32_t id, reason = 0;
+
+    id = notify(c, 0, "invoke", 0);
+    check_invoke_error(c, id, "missing");
+    check_invoke_error(c, 9999, "default");
+    invoke(c, id, "default");
+    CHECK(wait_action(c, id, "default", 2000));
+    CHECK(wait_closed(c, id, &reason, 2000));
+    CHECK(reason == 2);
+
+    hint_resident = TRUE;
+    id = notify(c, 0, "resident", 0);
+    invoke(c, id, "default");
+    CHECK(wait_action(c, id, "default", 2000));
+    reply = ctl_call(c, "GetActive", 0, 0);
+    CHECK(has_summary(reply, 3, "resident"));
+    dbus_message_unref(reply);
+    close_notification(c, id);
+    hint_resident = FALSE;
+}
+
 static pid_t spawn(const char *path)
 {
     pid_t pid = fork();
@@ -406,6 +492,7 @@ int main(int argc, char **argv)
     check_notifications(c);
     check_history();
     check_control(c);
+    check_invoke(c);
 
     second = spawn(argv[1]);
     CHECK(waitpid(second, &status, 0) == second);

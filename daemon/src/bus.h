@@ -34,4 +34,10 @@ void nabud_bus_expire(struct nabud_bus *bus);
 /* Moves the notification to the history, closes it and emits the signals. */
 bool nabud_bus_close_note(struct nabud_bus *bus, uint32_t id, uint32_t reason);
 
+/*
+ * Emits ActionInvoked for an action of the notification and closes it unless
+ * it is resident. Returns false when the notification or the action is unknown.
+ */
+bool nabud_bus_invoke(struct nabud_bus *bus, uint32_t id, const char *key);
+
 #endif
