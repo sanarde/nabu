@@ -14,6 +14,10 @@
 #define PATH "/org/freedesktop/Notifications"
 #define IFACE "org.freedesktop.Notifications"
 
+#define CTL_NAME "org.nuros.sanar.nabu"
+#define CTL_PATH "/org/nuros/sanar/nabu"
+#define CTL_IFACE "org.nuros.sanar.Nabu"
+
 static DBusMessage *call(DBusConnection *c, const char *method)
 {
     DBusMessage *message = dbus_message_new_method_call(NAME, PATH, IFACE, method);
@@ -26,7 +30,8 @@ static DBusMessage *call(DBusConnection *c, const char *method)
 static int wait_for_name(DBusConnection *c)
 {
     for (int i = 0; i < 100; i++) {
-        if (dbus_bus_name_has_owner(c, NAME, NULL))
+        if (dbus_bus_name_has_owner(c, NAME, NULL) &&
+            dbus_bus_name_has_owner(c, CTL_NAME, NULL))
             return 1;
         usleep(50000);
     }
@@ -162,7 +167,8 @@ static void close_notification(DBusConnection *c, uint32_t id)
         dbus_message_unref(reply);
 }
 
-static int wait_closed(DBusConnection *c, uint32_t id, uint32_t *reason, int timeout_ms)
+static int wait_signal(DBusConnection *c, const char *iface, const char *member,
+                       uint32_t id, uint32_t *reason, int timeout_ms)
 {
     for (int waited = 0; waited <= timeout_ms; waited += 50) {
         DBusMessage *message;
@@ -171,7 +177,7 @@ static int wait_closed(DBusConnection *c, uint32_t id, uint32_t *reason, int tim
         while ((message = dbus_connection_pop_message(c))) {
             uint32_t got_id, got_reason;
 
-            if (dbus_message_is_signal(message, IFACE, "NotificationClosed") &&
+            if (dbus_message_is_signal(message, iface, member) &&
                 dbus_message_get_args(message, NULL, DBUS_TYPE_UINT32, &got_id,
                                       DBUS_TYPE_UINT32, &got_reason, DBUS_TYPE_INVALID) &&
                 got_id == id) {
@@ -181,6 +187,89 @@ static int wait_closed(DBusConnection *c, uint32_t id, uint32_t *reason, int tim
             }
             dbus_message_unref(message);
         }
+    }
+    return 0;
+}
+
+static int wait_closed(DBusConnection *c, uint32_t id, uint32_t *reason, int timeout_ms)
+{
+    return wait_signal(c, IFACE, "NotificationClosed", id, reason, timeout_ms);
+}
+
+static int wait_posted(DBusConnection *c, uint32_t id, int timeout_ms)
+{
+    for (int waited = 0; waited <= timeout_ms; waited += 50) {
+        DBusMessage *message;
+
+        dbus_connection_read_write(c, 50);
+        while ((message = dbus_connection_pop_message(c))) {
+            DBusMessageIter iter, fields;
+            uint32_t got_id = 0;
+
+            if (dbus_message_is_signal(message, CTL_IFACE, "Posted") &&
+                dbus_message_iter_init(message, &iter) &&
+                dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_STRUCT) {
+                dbus_message_iter_recurse(&iter, &fields);
+                dbus_message_iter_get_basic(&fields, &got_id);
+                if (got_id == id) {
+                    dbus_message_unref(message);
+                    return 1;
+                }
+            }
+            dbus_message_unref(message);
+        }
+    }
+    return 0;
+}
+
+static DBusMessage *ctl_call(DBusConnection *c, const char *method, int has_id,
+                             uint32_t id)
+{
+    DBusMessage *message = dbus_message_new_method_call(CTL_NAME, CTL_PATH, CTL_IFACE, method);
+    DBusMessage *reply;
+
+    if (has_id)
+        dbus_message_append_args(message, DBUS_TYPE_UINT32, &id, DBUS_TYPE_INVALID);
+    reply = dbus_connection_send_with_reply_and_block(c, message, 5000, NULL);
+    dbus_message_unref(message);
+    CHECK(reply != NULL);
+    return reply;
+}
+
+static size_t count_items(DBusMessage *reply)
+{
+    DBusMessageIter iter, array;
+    size_t count = 0;
+
+    if (!reply || !dbus_message_iter_init(reply, &iter))
+        return 0;
+    dbus_message_iter_recurse(&iter, &array);
+    while (dbus_message_iter_get_arg_type(&array) == DBUS_TYPE_STRUCT) {
+        count++;
+        dbus_message_iter_next(&array);
+    }
+    return count;
+}
+
+static int has_summary(DBusMessage *reply, int index, const char *summary)
+{
+    DBusMessageIter iter, array;
+
+    if (!reply || !dbus_message_iter_init(reply, &iter))
+        return 0;
+    dbus_message_iter_recurse(&iter, &array);
+    while (dbus_message_iter_get_arg_type(&array) == DBUS_TYPE_STRUCT) {
+        DBusMessageIter fields;
+        const char *text = NULL;
+
+        dbus_message_iter_recurse(&array, &fields);
+        for (int i = 0; i < index; i++)
+            dbus_message_iter_next(&fields);
+        if (dbus_message_iter_get_arg_type(&fields) == DBUS_TYPE_STRING)
+            dbus_message_iter_get_basic(&fields, &text);
+        if (text && strcmp(text, summary) == 0)
+            return 1;
+        dbus_message_iter_next(&array);
     }
     return 0;
 }
@@ -239,6 +328,48 @@ static void check_history(void)
     CHECK(strstr(text, "\tlow\t") == NULL);
 }
 
+static void check_control(DBusConnection *c)
+{
+    DBusMessage *reply;
+    uint32_t a, b, reason = 0;
+    size_t before;
+
+    dbus_bus_add_match(c, "type='signal',interface='" CTL_IFACE "'", NULL);
+    hint_transient = FALSE;
+    a = notify(c, 0, "ctl-a", 0);
+    b = notify(c, 0, "ctl-b", 0);
+    CHECK(wait_posted(c, a, 2000));
+    CHECK(wait_posted(c, b, 2000));
+
+    reply = ctl_call(c, "GetActive", 0, 0);
+    CHECK(has_summary(reply, 3, "ctl-a") && has_summary(reply, 3, "ctl-b"));
+    before = count_items(reply);
+    dbus_message_unref(reply);
+
+    dbus_message_unref(ctl_call(c, "Dismiss", 1, a));
+    CHECK(wait_signal(c, CTL_IFACE, "Closed", a, &reason, 2000));
+    CHECK(reason == 2);
+    dbus_message_unref(ctl_call(c, "Dismiss", 1, 9999));
+
+    reply = ctl_call(c, "GetActive", 0, 0);
+    CHECK(!has_summary(reply, 3, "ctl-a") && has_summary(reply, 3, "ctl-b"));
+    CHECK(count_items(reply) == before - 1);
+    dbus_message_unref(reply);
+
+    reply = ctl_call(c, "GetHistory", 0, 0);
+    CHECK(has_summary(reply, 5, "ctl-a"));
+    CHECK(!has_summary(reply, 5, "ctl-b"));
+    dbus_message_unref(reply);
+
+    dbus_message_unref(ctl_call(c, "ClearHistory", 0, 0));
+    reply = ctl_call(c, "GetHistory", 0, 0);
+    CHECK(count_items(reply) == 0);
+    dbus_message_unref(reply);
+
+    close_notification(c, b);
+    hint_transient = TRUE;
+}
+
 static pid_t spawn(const char *path)
 {
     pid_t pid = fork();
@@ -274,6 +405,7 @@ int main(int argc, char **argv)
     check_introspection(c);
     check_notifications(c);
     check_history();
+    check_control(c);
 
     second = spawn(argv[1]);
     CHECK(waitpid(second, &status, 0) == second);

@@ -10,6 +10,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "control.h"
+
 #define BUS_NAME "org.freedesktop.Notifications"
 #define OBJECT_PATH "/org/freedesktop/Notifications"
 #define INTERFACE "org.freedesktop.Notifications"
@@ -164,7 +166,7 @@ static void emit_closed(struct nabud_bus *bus, uint32_t id, uint32_t reason)
     dbus_message_unref(signal);
 }
 
-static bool close_note(struct nabud_bus *bus, uint32_t id, uint32_t reason)
+bool nabud_bus_close_note(struct nabud_bus *bus, uint32_t id, uint32_t reason)
 {
     const struct nabu_note *note = nabu_notes_find(&bus->notes, id);
 
@@ -174,7 +176,9 @@ static bool close_note(struct nabud_bus *bus, uint32_t id, uint32_t reason)
         nabu_history_add(&bus->history, note, (uint8_t)reason, time(NULL)) != 0)
         fprintf(stderr, "nabud: cannot save history\n");
     nabu_notes_close(&bus->notes, id);
+    arm_timer(bus);
     emit_closed(bus, id, reason);
+    nabud_control_closed(bus, id, reason);
     return true;
 }
 
@@ -308,6 +312,7 @@ static DBusMessage *call_notify(struct nabud_bus *bus, DBusMessage *message)
     if (id == 0)
         return dbus_message_new_error(message, DBUS_ERROR_NO_MEMORY, "Out of memory");
     arm_timer(bus);
+    nabud_control_posted(bus, id);
     reply = dbus_message_new_method_return(message);
     if (reply)
         dbus_message_append_args(reply, DBUS_TYPE_UINT32, &id, DBUS_TYPE_INVALID);
@@ -321,8 +326,7 @@ static DBusMessage *call_close(struct nabud_bus *bus, DBusMessage *message)
     if (!dbus_message_get_args(message, NULL, DBUS_TYPE_UINT32, &id, DBUS_TYPE_INVALID))
         return dbus_message_new_error(message, DBUS_ERROR_INVALID_ARGS,
                                       "Expected one unsigned integer");
-    if (close_note(bus, id, NABU_CLOSE_CALLED))
-        arm_timer(bus);
+    nabud_bus_close_note(bus, id, NABU_CLOSE_CALLED);
     return dbus_message_new_method_return(message);
 }
 
@@ -412,6 +416,8 @@ int nabud_bus_open(struct nabud_bus *bus, int epfd, int timer_fd,
         fprintf(stderr, "nabud: cannot register D-Bus object\n");
         goto fail;
     }
+    if (nabud_control_open(bus) != 0)
+        goto fail;
     dispatch_all(bus);
     return 0;
 
@@ -440,7 +446,7 @@ void nabud_bus_expire(struct nabud_bus *bus)
     if (read(bus->timer_fd, &ticks, sizeof(ticks)) != sizeof(ticks))
         return;
     while ((id = nabu_notes_next_expired(&bus->notes, now)) != 0)
-        close_note(bus, id, NABU_CLOSE_EXPIRED);
+        nabud_bus_close_note(bus, id, NABU_CLOSE_EXPIRED);
     arm_timer(bus);
 }
 

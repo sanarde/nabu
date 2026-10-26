@@ -3,6 +3,7 @@
 #define NABUD_BUS_H
 
 #include <dbus/dbus.h>
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "loop.h"
@@ -29,5 +30,8 @@ void nabud_bus_close(struct nabud_bus *bus);
 void nabud_bus_event(struct nabud_bus *bus, struct nabud_bus_watch *watch,
                      uint32_t events);
 void nabud_bus_expire(struct nabud_bus *bus);
+
+/* Moves the notification to the history, closes it and emits the signals. */
+bool nabud_bus_close_note(struct nabud_bus *bus, uint32_t id, uint32_t reason);
 
 #endif
