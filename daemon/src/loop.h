@@ -4,6 +4,7 @@
 
 enum nabud_source_kind {
     NABUD_SRC_SIGNAL,
+    NABUD_SRC_TIMER,
     NABUD_SRC_BUS,
 };
 

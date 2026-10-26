@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 #include <dbus/dbus.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/wait.h>
@@ -84,6 +85,94 @@ static void check_introspection(DBusConnection *c)
     dbus_message_unref(reply);
 }
 
+static uint32_t notify(DBusConnection *c, uint32_t replaces_id, const char *summary,
+                       int32_t timeout_ms)
+{
+    DBusMessage *message = dbus_message_new_method_call(NAME, PATH, IFACE, "Notify");
+    DBusMessageIter iter, array;
+    DBusMessage *reply;
+    const char *app = "test", *icon = "", *body = "body";
+    uint32_t id = 0;
+
+    dbus_message_append_args(message, DBUS_TYPE_STRING, &app, DBUS_TYPE_UINT32,
+                             &replaces_id, DBUS_TYPE_STRING, &icon, DBUS_TYPE_STRING,
+                             &summary, DBUS_TYPE_STRING, &body, DBUS_TYPE_INVALID);
+    dbus_message_iter_init_append(message, &iter);
+    dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, "s", &array);
+    dbus_message_iter_close_container(&iter, &array);
+    dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, "{sv}", &array);
+    dbus_message_iter_close_container(&iter, &array);
+    dbus_message_iter_append_basic(&iter, DBUS_TYPE_INT32, &timeout_ms);
+
+    reply = dbus_connection_send_with_reply_and_block(c, message, 5000, NULL);
+    dbus_message_unref(message);
+    CHECK(reply != NULL);
+    if (reply) {
+        CHECK(dbus_message_get_args(reply, NULL, DBUS_TYPE_UINT32, &id, DBUS_TYPE_INVALID));
+        dbus_message_unref(reply);
+    }
+    return id;
+}
+
+static void close_notification(DBusConnection *c, uint32_t id)
+{
+    DBusMessage *message = dbus_message_new_method_call(NAME, PATH, IFACE, "CloseNotification");
+    DBusMessage *reply;
+
+    dbus_message_append_args(message, DBUS_TYPE_UINT32, &id, DBUS_TYPE_INVALID);
+    reply = dbus_connection_send_with_reply_and_block(c, message, 5000, NULL);
+    dbus_message_unref(message);
+    CHECK(reply != NULL);
+    if (reply)
+        dbus_message_unref(reply);
+}
+
+static int wait_closed(DBusConnection *c, uint32_t id, uint32_t *reason, int timeout_ms)
+{
+    for (int waited = 0; waited <= timeout_ms; waited += 50) {
+        DBusMessage *message;
+
+        dbus_connection_read_write(c, 50);
+        while ((message = dbus_connection_pop_message(c))) {
+            uint32_t got_id, got_reason;
+
+            if (dbus_message_is_signal(message, IFACE, "NotificationClosed") &&
+                dbus_message_get_args(message, NULL, DBUS_TYPE_UINT32, &got_id,
+                                      DBUS_TYPE_UINT32, &got_reason, DBUS_TYPE_INVALID) &&
+                got_id == id) {
+                *reason = got_reason;
+                dbus_message_unref(message);
+                return 1;
+            }
+            dbus_message_unref(message);
+        }
+    }
+    return 0;
+}
+
+static void check_notifications(DBusConnection *c)
+{
+    uint32_t a, b, reason = 0;
+
+    dbus_bus_add_match(c, "type='signal',interface='" IFACE "'", NULL);
+
+    a = notify(c, 0, "first", 0);
+    CHECK(a != 0);
+    b = notify(c, 0, "second", 0);
+    CHECK(b != 0 && b != a);
+    CHECK(notify(c, a, "first again", 0) == a);
+
+    close_notification(c, a);
+    CHECK(wait_closed(c, a, &reason, 2000));
+    CHECK(reason == 3);
+
+    close_notification(c, 9999);
+
+    b = notify(c, 0, "short", 100);
+    CHECK(wait_closed(c, b, &reason, 2000));
+    CHECK(reason == 1);
+}
+
 static pid_t spawn(const char *path)
 {
     pid_t pid = fork();
@@ -115,6 +204,7 @@ int main(int argc, char **argv)
     check_server_information(c);
     check_capabilities(c);
     check_introspection(c);
+    check_notifications(c);
 
     second = spawn(argv[1]);
     CHECK(waitpid(second, &status, 0) == second);

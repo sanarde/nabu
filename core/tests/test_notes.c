@@ -1,0 +1,121 @@
+/* SPDX-License-Identifier: GPL-3.0-only */
+#include "check.h"
+#include "notes.h"
+
+static const struct nabu_note_input base = {
+    .app_name = "app",
+    .app_icon = "",
+    .summary = "summary",
+    .body = "body",
+    .timeout_ms = -1,
+};
+
+static void test_post_and_find(void)
+{
+    struct nabu_notes notes;
+    struct nabu_note_input input = base;
+    uint32_t a, b;
+
+    nabu_notes_init(&notes);
+    a = nabu_notes_post(&notes, 0, &input, 1000);
+    input.summary = "second";
+    b = nabu_notes_post(&notes, 0, &input, 1000);
+    CHECK(a == 1 && b == 2);
+    CHECK(notes.count == 2);
+    CHECK_STR(nabu_notes_find(&notes, a)->summary, "summary");
+    CHECK_STR(nabu_notes_find(&notes, b)->summary, "second");
+    CHECK(nabu_notes_find(&notes, 99) == NULL);
+    nabu_notes_free(&notes);
+}
+
+static void test_replace(void)
+{
+    struct nabu_notes notes;
+    struct nabu_note_input input = base;
+    uint32_t a, again, other;
+
+    nabu_notes_init(&notes);
+    a = nabu_notes_post(&notes, 0, &input, 1000);
+    input.summary = "changed";
+    again = nabu_notes_post(&notes, a, &input, 2000);
+    CHECK(again == a);
+    CHECK(notes.count == 1);
+    CHECK_STR(nabu_notes_find(&notes, a)->summary, "changed");
+    CHECK(nabu_notes_find(&notes, a)->expires_ms == 2000 + NABU_DEFAULT_TIMEOUT_MS);
+
+    other = nabu_notes_post(&notes, 77, &input, 2000);
+    CHECK(other != 77 && other != a);
+    CHECK(notes.count == 2);
+    nabu_notes_free(&notes);
+}
+
+static void test_timeouts(void)
+{
+    struct nabu_notes notes;
+    struct nabu_note_input input = base;
+    uint32_t forever, shorter, longer;
+
+    nabu_notes_init(&notes);
+    input.timeout_ms = 0;
+    forever = nabu_notes_post(&notes, 0, &input, 1000);
+    CHECK(nabu_notes_find(&notes, forever)->expires_ms == -1);
+    CHECK(nabu_notes_next_expiry(&notes) == -1);
+
+    input.timeout_ms = 3000;
+    longer = nabu_notes_post(&notes, 0, &input, 1000);
+    input.timeout_ms = 500;
+    shorter = nabu_notes_post(&notes, 0, &input, 1000);
+    CHECK(nabu_notes_next_expiry(&notes) == 1500);
+
+    {
+        uint32_t ids[3];
+        size_t n = nabu_notes_expire(&notes, 1499, ids);
+
+        CHECK(n == 0);
+        n = nabu_notes_expire(&notes, 1500, ids);
+        CHECK(n == 1 && ids[0] == shorter);
+        CHECK(nabu_notes_next_expiry(&notes) == 4000);
+        n = nabu_notes_expire(&notes, 9000, ids);
+        CHECK(n == 1 && ids[0] == longer);
+        CHECK(notes.count == 1);
+        CHECK(nabu_notes_find(&notes, forever) != NULL);
+    }
+    nabu_notes_free(&notes);
+}
+
+static void test_close(void)
+{
+    struct nabu_notes notes;
+    uint32_t a, b, c;
+
+    nabu_notes_init(&notes);
+    a = nabu_notes_post(&notes, 0, &base, 0);
+    b = nabu_notes_post(&notes, 0, &base, 0);
+    c = nabu_notes_post(&notes, 0, &base, 0);
+    CHECK(nabu_notes_close(&notes, b));
+    CHECK(!nabu_notes_close(&notes, b));
+    CHECK(notes.count == 2);
+    CHECK(nabu_notes_find(&notes, a) && nabu_notes_find(&notes, c));
+    nabu_notes_free(&notes);
+}
+
+static void test_many(void)
+{
+    struct nabu_notes notes;
+
+    nabu_notes_init(&notes);
+    for (int i = 0; i < 100; i++)
+        CHECK(nabu_notes_post(&notes, 0, &base, 0) == (uint32_t)i + 1);
+    CHECK(notes.count == 100);
+    nabu_notes_free(&notes);
+}
+
+int main(void)
+{
+    test_post_and_find();
+    test_replace();
+    test_timeouts();
+    test_close();
+    test_many();
+    return check_failures ? 1 : 0;
+}

@@ -14,5 +14,6 @@ project(
 add_project_arguments('-D_GNU_SOURCE', language: 'c')
 add_project_arguments('-DNABU_VERSION="@0@"'.format(meson.project_version()), language: 'c')
 
+subdir('core')
 subdir('daemon')
 subdir('data')
