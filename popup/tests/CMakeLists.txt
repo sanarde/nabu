@@ -1,0 +1,11 @@
+find_program(NABUD nabud HINTS "${NABU_DAEMON_DIR}")
+find_program(DBUS_RUN_SESSION dbus-run-session)
+
+if(NABUD AND DBUS_RUN_SESSION)
+    qt_add_executable(tst_model tst_model.cpp)
+    target_link_libraries(tst_model PRIVATE nabu-popup-model Qt6::Test)
+    add_test(NAME model COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:tst_model>)
+    set_tests_properties(model PROPERTIES ENVIRONMENT "NABUD=${NABUD};QT_QPA_PLATFORM=offscreen")
+else()
+    message(STATUS "nabud or dbus-run-session not found, the popup tests are not built")
+endif()
