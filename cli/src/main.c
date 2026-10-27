@@ -14,7 +14,8 @@ static const char usage[] =
     "       nabu clear\n"
     "       nabu dismiss ID\n"
     "       nabu invoke ID KEY\n"
-    "       nabu dnd [on|off|status]\n";
+    "       nabu dnd [on|off|status]\n"
+    "       nabu watch\n";
 
 static const char *const urgency_names[] = {"low", "normal", "critical"};
 static const char *const reason_names[] = {"unknown", "expired", "dismissed", "closed",
@@ -276,6 +277,103 @@ static int cmd_dnd(struct nabu_client *client, int argc, char **argv)
     return usage_error();
 }
 
+static int is_nabu_signal(DBusMessage *message, const char *member)
+{
+    return dbus_message_is_signal(message, "org.nuros.sanar.Nabu", member);
+}
+
+static void print_posted(DBusMessage *message)
+{
+    DBusMessageIter iter;
+    struct note_view note;
+
+    if (!dbus_message_iter_init(message, &iter) ||
+        dbus_message_iter_get_arg_type(&iter) != DBUS_TYPE_STRUCT)
+        return;
+    read_note(&iter, &note);
+    fputs("posted\t", stdout);
+    print_note(&note);
+}
+
+static void print_closed(DBusMessage *message)
+{
+    dbus_uint32_t id, reason;
+
+    if (dbus_message_get_args(message, NULL, DBUS_TYPE_UINT32, &id, DBUS_TYPE_UINT32,
+                              &reason, DBUS_TYPE_INVALID))
+        printf("closed\t%u\t%s\n", id, reason_name((unsigned char)reason));
+}
+
+static void print_properties_changed(DBusMessage *message)
+{
+    DBusMessageIter iter, dict;
+
+    if (!dbus_message_iter_init(message, &iter))
+        return;
+    dbus_message_iter_next(&iter);
+    if (dbus_message_iter_get_arg_type(&iter) != DBUS_TYPE_ARRAY)
+        return;
+    dbus_message_iter_recurse(&iter, &dict);
+    while (dbus_message_iter_get_arg_type(&dict) == DBUS_TYPE_DICT_ENTRY) {
+        DBusMessageIter entry, variant;
+        const char *name;
+        dbus_bool_t enabled;
+
+        dbus_message_iter_recurse(&dict, &entry);
+        dbus_message_iter_get_basic(&entry, &name);
+        dbus_message_iter_next(&entry);
+        if (strcmp(name, "DoNotDisturb") == 0) {
+            dbus_message_iter_recurse(&entry, &variant);
+            dbus_message_iter_get_basic(&variant, &enabled);
+            puts(enabled ? "dnd\ton" : "dnd\toff");
+        }
+        dbus_message_iter_next(&dict);
+    }
+}
+
+static int cmd_watch(struct nabu_client *client, int argc, char **argv)
+{
+    DBusError error;
+    DBusMessage *message;
+
+    (void)argc;
+    (void)argv;
+    dbus_error_init(&error);
+    dbus_bus_add_match(client->connection,
+                       "type='signal',sender='org.nuros.sanar.nabu',"
+                       "interface='org.nuros.sanar.Nabu'",
+                       &error);
+    if (!dbus_error_is_set(&error))
+        dbus_bus_add_match(client->connection,
+                           "type='signal',sender='org.nuros.sanar.nabu',"
+                           "interface='org.freedesktop.DBus.Properties',"
+                           "member='PropertiesChanged'",
+                           &error);
+    if (dbus_error_is_set(&error)) {
+        fprintf(stderr, "nabu: %s\n", error.message);
+        dbus_error_free(&error);
+        return 1;
+    }
+
+    for (;;) {
+        if (!dbus_connection_read_write(client->connection, -1)) {
+            fprintf(stderr, "nabu: disconnected from the session bus\n");
+            return 1;
+        }
+        while ((message = dbus_connection_pop_message(client->connection))) {
+            if (is_nabu_signal(message, "Posted"))
+                print_posted(message);
+            else if (is_nabu_signal(message, "Closed"))
+                print_closed(message);
+            else if (dbus_message_is_signal(message, "org.freedesktop.DBus.Properties",
+                                            "PropertiesChanged"))
+                print_properties_changed(message);
+            dbus_message_unref(message);
+        }
+        fflush(stdout);
+    }
+}
+
 struct command {
     const char *name;
     int min_args;
@@ -290,6 +388,7 @@ static const struct command commands[] = {
     {"dismiss", 1, 1, cmd_dismiss},
     {"invoke", 2, 2, cmd_invoke},
     {"dnd", 0, 1, cmd_dnd},
+    {"watch", 0, 0, cmd_watch},
 };
 
 int main(int argc, char **argv)

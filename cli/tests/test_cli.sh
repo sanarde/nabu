@@ -12,9 +12,11 @@ nabud=$2
 notify=$3
 tmp=$(mktemp -d /tmp/nabu-test-XXXXXX)
 daemon=
+watcher=
 failures=0
 
 cleanup() {
+    [ -n "$watcher" ] && kill "$watcher" 2>/dev/null
     [ -n "$daemon" ] && kill "$daemon" 2>/dev/null
     rm -rf "$tmp"
 }
@@ -100,6 +102,40 @@ expect "$("$nabu" dnd)" off "dnd off"
 expect "$?" 2 "dnd with a bad argument"
 "$nabu" dismiss > /dev/null 2>&1
 expect "$?" 2 "dismiss without an argument"
+
+"$nabu" watch > "$tmp/watch" 2> /dev/null &
+watcher=$!
+i=0
+while [ ! -s "$tmp/watch" ]; do
+    "$nabu" dnd on
+    "$nabu" dnd off
+    i=$((i + 1))
+    [ "$i" -gt 40 ] && break
+done
+"$nabu" dnd on
+"$nabu" dnd off
+id=$("$notify" watched 0 1 0)
+"$nabu" invoke "$id" default
+i=0
+while ! grep -q "^closed	$id	dismissed$" "$tmp/watch"; do
+    i=$((i + 1))
+    [ "$i" -gt 60 ] && break
+    sleep 0.05
+done
+if ! grep -q "^posted	$id	normal	nabu-test	watched$" "$tmp/watch"; then
+    echo "FAIL: watch posted line: '$(cat "$tmp/watch")'" >&2
+    failures=$((failures + 1))
+fi
+if ! grep -q "^closed	$id	dismissed$" "$tmp/watch"; then
+    echo "FAIL: watch closed line: '$(cat "$tmp/watch")'" >&2
+    failures=$((failures + 1))
+fi
+if ! grep -q "^dnd	on$" "$tmp/watch" || ! grep -q "^dnd	off$" "$tmp/watch"; then
+    echo "FAIL: watch dnd lines: '$(cat "$tmp/watch")'" >&2
+    failures=$((failures + 1))
+fi
+kill "$watcher" 2>/dev/null
+watcher=
 
 "$nabu" > /dev/null 2>&1
 expect "$?" 2 "no arguments"
