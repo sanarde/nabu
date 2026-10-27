@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Nabu Popup
+GenericName=Notification Popup
+Comment=Shows the notifications of the Nabu daemon
+Exec=nabu-popup
+Terminal=false
+NoDisplay=true
+Categories=System;Qt;
+StartupNotify=false
