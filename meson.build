@@ -16,4 +16,5 @@ add_project_arguments('-DNABU_VERSION="@0@"'.format(meson.project_version()), la
 
 subdir('core')
 subdir('daemon')
+subdir('cli')
 subdir('data')
