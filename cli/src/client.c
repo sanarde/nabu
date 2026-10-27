@@ -37,6 +37,12 @@ DBusMessage *nabu_client_method(const char *method)
     return dbus_message_new_method_call(DESTINATION, OBJECT_PATH, INTERFACE, method);
 }
 
+DBusMessage *nabu_client_properties_method(const char *method)
+{
+    return dbus_message_new_method_call(DESTINATION, OBJECT_PATH,
+                                        "org.freedesktop.DBus.Properties", method);
+}
+
 DBusMessage *nabu_client_call(struct nabu_client *client, DBusMessage *call)
 {
     DBusError error;

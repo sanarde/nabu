@@ -67,6 +67,40 @@ fi
 expect "$?" 0 "clear"
 expect "$("$nabu" history)" "" "history after clear"
 
+"$notify" third 0 1 0 > /dev/null
+"$nabu" dismiss 1
+expect "$?" 0 "dismiss"
+expect "$("$nabu" list)" "2	critical	nabu-test	second line
+4	normal	nabu-test	third" "list after dismiss"
+"$nabu" dismiss 99
+expect "$?" 0 "dismiss of an unknown id"
+"$nabu" dismiss abc > /dev/null 2>&1
+expect "$?" 1 "dismiss with a bad id"
+
+"$nabu" invoke 4 missing 2> "$tmp/err"
+expect "$?" 1 "invoke with an unknown action"
+expect "$(cat "$tmp/err")" "nabu: No such notification or action" "invoke message"
+"$nabu" invoke 4 default
+expect "$?" 0 "invoke"
+expect "$("$nabu" list)" "2	critical	nabu-test	second line" "list after invoke"
+expect "$("$nabu" history | cut -f2,5)" "dismissed	first
+dismissed	third" "history reasons"
+"$nabu" clear
+
+expect "$("$nabu" dnd)" off "dnd default"
+"$nabu" dnd on
+expect "$?" 0 "dnd on"
+expect "$("$nabu" dnd status)" on "dnd status on"
+"$notify" hidden 0 1 0 > /dev/null
+expect "$("$nabu" list)" "2	critical	nabu-test	second line" "list under dnd"
+expect "$("$nabu" history | cut -f2,5)" "undefined	hidden" "history under dnd"
+"$nabu" dnd off
+expect "$("$nabu" dnd)" off "dnd off"
+"$nabu" dnd maybe > /dev/null 2>&1
+expect "$?" 2 "dnd with a bad argument"
+"$nabu" dismiss > /dev/null 2>&1
+expect "$?" 2 "dismiss without an argument"
+
 "$nabu" > /dev/null 2>&1
 expect "$?" 2 "no arguments"
 "$nabu" bogus > /dev/null 2>&1
